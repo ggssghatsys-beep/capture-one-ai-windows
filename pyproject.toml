@@ -1,0 +1,35 @@
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "capture-one-ai-rebuild"
+version = "0.2.0a1"
+description = "Windows Capture One local owner, verified editing core, and CLI/MCP clients"
+readme = "README.md"
+license = "MIT"
+license-files = ["LICENSE"]
+requires-python = ">=3.11"
+dependencies = ["mcp>=1.26,<2", "Pillow>=11"]
+
+[project.urls]
+Repository = "https://github.com/ggssghatsys-beep/capture-one-ai-windows"
+Issues = "https://github.com/ggssghatsys-beep/capture-one-ai-windows/issues"
+
+[project.optional-dependencies]
+test = ["pytest>=8"]
+
+[project.scripts]
+c1ai = "c1ai.__main__:main"
+c1ai-mcp = "c1ai.mcp_server:main"
+
+[tool.setuptools]
+packages = ["c1ai"]
+include-package-data = true
+
+[tool.setuptools.package-data]
+c1ai = ["*.ps1", "native/*.ps1", "data/*.json"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-ra"

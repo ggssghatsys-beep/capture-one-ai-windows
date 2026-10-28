@@ -1,0 +1,11 @@
+{
+  "qualified_version": "16.8.6.3784",
+  "native_qualified_fields": ["exposure", "contrast", "brightness", "saturation", "temperature", "tint", "highlight_recovery", "shadow_recovery", "white_recovery", "black_recovery"],
+  "qualified_modules": ["color_balance", "color_mixer", "curves", "layers", "levels", "masks"],
+  "experimental_fields": [],
+  "experimental_modules": [],
+  "qualification_evidence": {
+    "scope": "Windows Capture One 16.8.6.3784; Session candidates; bounded global/local native read-write and preview validation.",
+    "report": "docs/SUPPORT.md"
+  }
+}

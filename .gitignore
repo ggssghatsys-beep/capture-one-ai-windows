@@ -1,0 +1,44 @@
+# Local environments and build output
+.venv/
+.packaging-venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+build/
+dist/
+internal/bin/
+
+# Machine configuration and private historical evidence
+config/mcp-server.json
+config/mcp-server.local.json
+config/config.local.json
+references/
+docs/*.json
+docs/CLEANUP.md
+docs/VALIDATION.md
+docs/CAPABILITIES.md
+docs/CODE_REVIEW.md
+docs/RESEARCH.md
+requirements-tested.txt
+
+# Never distribute user photos, credentials, sessions or operation journals
+*.log
+*.sqlite3*
+*.cosessiondb*
+*.cocatalogdb*
+*.cos
+*.comask
+*.NEF
+*.CR2
+*.CR3
+*.ARW
+*.DNG
+*.RAF
+*.tif
+*.jpg
+*.png
+.env
+internal-token.txt
+candidates.json
+internal-engine.json

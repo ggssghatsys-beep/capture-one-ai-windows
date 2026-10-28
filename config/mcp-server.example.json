@@ -1,0 +1,9 @@
+{
+  "mcpServers": {
+    "capture-one-ai": {
+      "command": "C:\\Tools\\capture-one-ai-windows\\.venv\\Scripts\\python.exe",
+      "args": ["-m", "c1ai", "mcp"],
+      "env": {"PYTHONUTF8": "1", "PYTHONUNBUFFERED": "1"}
+    }
+  }
+}

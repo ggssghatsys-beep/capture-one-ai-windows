@@ -50,6 +50,8 @@ Native Capture One editing for Windows through MCP and a JSON CLI. Vision models
 
 ## 包内文档
 
+继续开发可直接克隆本仓库最新源码，先读 [开发 AI 入口](AGENTS.md)。计划开发 Mac 版时阅读 [macOS 开发交接](docs/MAC_PORT.md)；**这是迁移说明，当前版本仍只支持已验证的 Windows 环境**。
+
 | 文档 | 内容 |
 |---|---|
 | [INSTALL](docs/INSTALL.md) | 安装、启动、配置、升级和排错 |
@@ -60,6 +62,8 @@ Native Capture One editing for Windows through MCP and a JSON CLI. Vision models
 | [SUPPORT](docs/SUPPORT.md) | 已验证范围与未完成事项 |
 | [ARCHITECTURE](docs/ARCHITECTURE.md) | 原生调用与原图保护 |
 | [DEVELOPMENT](docs/DEVELOPMENT.md) | 开发和发布包生成 |
+| [AGENTS](AGENTS.md) | 开发 AI 接手顺序、原生优先和原图保护原则 |
+| [MAC_PORT](docs/MAC_PORT.md) | Mac 迁移入口、可复用代码、已知缺口与验收顺序 |
 
 运行状态在当前用户 `%LOCALAPPDATA%\CaptureOneAI`，不进入仓库。分发包不含照片、预览、Session、私人配置、连接令牌或历史操作数据库。预览只保留最近 8 张缓存，不是永久成片导出。
 

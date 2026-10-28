@@ -9,12 +9,12 @@ import zipfile
 
 ROOT = Path(__file__).resolve().parent.parent
 PUBLIC_FILES = [
-    '.gitignore', '.gitattributes', 'README.md', 'LICENSE', 'THIRD_PARTY_NOTICES.md',
+    '.gitignore', '.gitattributes', 'README.md', 'AGENTS.md', 'LICENSE', 'THIRD_PARTY_NOTICES.md',
     'pyproject.toml', 'requirements-runtime.txt', 'Install.ps1', 'Start-CaptureOne.ps1', 'Run.ps1',
     'config/native-profile.json', 'config/mcp-server.example.json',
     'docs/INSTALL.md', 'docs/AI_CLIENTS.md', 'docs/API.md', 'docs/COLOR_API.md',
     'docs/NAVIGATION_PREVIEW.md', 'docs/SUPPORT.md', 'docs/ARCHITECTURE.md',
-    'docs/DEVELOPMENT.md', 'docs/RELEASE_CHECKS.md',
+    'docs/DEVELOPMENT.md', 'docs/MAC_PORT.md', 'docs/RELEASE_CHECKS.md',
     'internal/StartupHook.cs', 'internal/NativeEngine.cs', 'internal/start.ps1', 'internal/build.ps1',
     'scripts/check_connection.py', 'scripts/configure.py', 'scripts/package_release.py',
     'scripts/check_release.py',

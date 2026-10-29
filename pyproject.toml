@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "capture-one-ai-rebuild"
-version = "0.3.0a1"
+version = "0.3.0a2"
 description = "Windows Capture One local owner, verified editing core, and CLI/MCP clients"
 readme = "README.md"
 license = "MIT"

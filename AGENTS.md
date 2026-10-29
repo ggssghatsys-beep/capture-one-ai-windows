@@ -12,7 +12,8 @@
 
 ## 当前基线
 
-- 当前版本 0.3.0a1；此前公开版本 0.2.0a1 / tag `v0.2.0-alpha.1`，实测 Windows + Capture One 16.8.6.3784 + Session。
+- 当前版本 0.3.0a2 / tag `v0.3.0-alpha.2`；此前公开版本 0.3.0a1、0.2.0a1 保留。实测 Windows + Capture One 16.8.6.3784 + Session。
+- 分析窗口默认跟随当前图层蒙版；MCP analyze_image 保留默认整图语义，局部分析显式传 analysis_scope=active_layer。肤色参考不是皮肤检测，空蒙版不回退整图；详情见 docs/SCOPES.md。
 - **macOS 后端尚未实现或实机验证。** 迁移文档是开发交接，不是 Mac 使用说明。
 - 保留当前 Windows 功能，优先在同一项目中新增 Mac 平台实现，不重写全部系统。
 - 原六个公共工具为 context、images、read、adjust、preview、operations；MCP 与 CLI 共用核心，不按 AI 厂商另建一套工具。

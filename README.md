@@ -2,7 +2,7 @@
 
 让视觉 AI 在 Windows 上读取和调整 Capture One，并取得 C1 实际渲染的预览。提供 **MCP stdio + JSON CLI**，不绑定 AI 厂商、账号或聊天客户端。
 
-**0.3.0a1 预览版，实测 Capture One 16.8.6.3784 / Windows / Session。** 使用 C1 内部托管对象和原生处理内核，不是官方公开稳定 SDK。其他 C1 版本、Catalog 和多照片批量任务尚未完成兼容验证；启动器拒绝未验证版本。
+**0.3.0a2 预览版，实测 Capture One 16.8.6.3784 / Windows / Session。** 使用 C1 内部托管对象和原生处理内核，不是官方公开稳定 SDK。其他 C1 版本、Catalog 和多照片批量任务尚未完成兼容验证；启动器拒绝未验证版本。
 
 Native Capture One editing for Windows through MCP and a JSON CLI. Vision models plan edits; the local bridge executes them and returns real Capture One previews. Unofficial, version-specific, MIT-licensed.
 
@@ -16,6 +16,17 @@ Native Capture One editing for Windows through MCP and a JSON CLI. Vision models
 - 模块重置与快照复用；当前集合内按 UUID 选图和翻页。
 - C1 原生照片／灰度蒙版预览，长边 128～1600 像素；预览与 RAW 坐标映射。
 - 独立波形窗口和 `analyze_image`：亮度波形、RGB Parade、线条直方图、带肤色参考箭头的矢量图，以及供 AI 读取的同源数值、ROI 和参考差值。见 [启动与接口说明](docs/SCOPES.md) 和 [验证记录](docs/SCOPES_VALIDATION.md)。0.3.0a1 新增；旧 0.2.0a1 ZIP 保持原样。
+- **0.3.0a2：跟随当前图层蒙版分析＋预览中拖动框选。** 选背景层看整图，选调整层只统计其蒙版覆盖的最终画面；波形、直方图、矢量图和 AI 数值使用同一覆盖权重，保留羽化。
+
+### 只看皮肤区域怎么用
+
+1. 在 C1 选中覆盖皮肤的蒙版图层，在分析窗口切到“矢量图”。窗口默认开启“⋯ → 跟随当前图层蒙版”。
+2. 要进一步缩小范围，选择“⋯ → 在预览中框选区域…”，拖动矩形后点击“应用”。统计范围为矩形与蒙版的交集，不修改 C1 裁剪或蒙版。
+3. 选回 Background 即分析背景层范围；若之前设置了矩形框选，可在框选窗口点“恢复整个画面”并应用。取消“跟随当前图层蒙版”可忽略蒙版。
+
+肤色参考线不会自动找脸或识别皮肤。主体蒙版可能包含衣服，分析纯肤色时需要相应的皮肤蒙版。空蒙版显示没有覆盖像素，绝不自动退回整图。
+
+AI 分析当前图层时调用 `analyze_image(analysis_scope="active_layer", include_vectorscope=True)`；省略 analysis_scope 保持旧整图语义。获取窗口同一份快照时传 analysis_id，详见 [AI 安装与使用提示](docs/AI_INSTALL_PROMPT.md)。
 
 全局和局部调整共用同一接口。正常流程不导入预设、不截图识色、不发送键鼠输入，不要求展开面板。清晰度、锐化、降噪、镜头／几何及人像精修不在当前范围；默认不切文档、不导出。
 

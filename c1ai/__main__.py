@@ -13,7 +13,7 @@ def parser():
     owner = sub.add_parser("owner", help="Run the independent per-user owner")
     owner.add_argument("--serve", action="store_true", required=True)
     sub.add_parser("mcp", help="Run the official SDK's stdio MCP thin client")
-    for command in ("context", "images", "read", "adjust", "preview", "operations", "request"):
+    for command in ("context", "images", "read", "adjust", "preview", "operations", "analyze_image", "request"):
         item = sub.add_parser(command)
         source = item.add_mutually_exclusive_group()
         source.add_argument("--json", dest="json_text", help="Request or command arguments as a JSON object")

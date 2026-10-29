@@ -18,6 +18,8 @@
 
 ## 启动与连接
 
+需要人看的波形／直方图窗口时，安装加 `-WithScopes`，例如 `Install.ps1 -WithScopes -SessionPath 'D:\Photos\MySession\MySession.cosessiondb'`。已有配置只补窗口可用 `Install.ps1 -WithScopes -EnvironmentOnly`。该选项会启用随项目启动器打开窗口，并创建两个桌面快捷方式；仅安装 MCP 不需要 Qt/PyAV，也不创建图标。复制给桌面 AI 的操作提示见 [AI_INSTALL_PROMPT](AI_INSTALL_PROMPT.md)。
+
 首次先保存并正常退出 C1，再执行：
 
 ```powershell

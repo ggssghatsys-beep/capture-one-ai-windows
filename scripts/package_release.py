@@ -10,6 +10,7 @@ import zipfile
 ROOT = Path(__file__).resolve().parent.parent
 PUBLIC_FILES = [
     '.gitignore', '.gitattributes', 'README.md', 'AGENTS.md', 'LICENSE', 'THIRD_PARTY_NOTICES.md',
+    'third_party/openrv-web-MIT.txt', 'docs/SCOPES_REUSE.md',
     'pyproject.toml', 'requirements-runtime.txt', 'Install.ps1', 'Start-CaptureOne.ps1', 'Run.ps1',
     'config/native-profile.json', 'config/mcp-server.example.json',
     'docs/INSTALL.md', 'docs/AI_CLIENTS.md', 'docs/API.md', 'docs/COLOR_API.md',
@@ -17,7 +18,8 @@ PUBLIC_FILES = [
     'docs/DEVELOPMENT.md', 'docs/MAC_PORT.md', 'docs/RELEASE_CHECKS.md',
     'internal/StartupHook.cs', 'internal/NativeEngine.cs', 'internal/start.ps1', 'internal/build.ps1',
     'scripts/check_connection.py', 'scripts/configure.py', 'scripts/package_release.py',
-    'scripts/check_release.py',
+    'scripts/check_release.py', 'Scopes.ps1', 'Setup-Shortcuts.ps1', 'scripts/probe_image_source.py',
+    'scripts/check_scopes_live.py', 'docs/SCOPES.md', 'docs/SCOPES_VALIDATION.md', 'docs/AI_INSTALL_PROMPT.md',
 ]
 
 
@@ -25,7 +27,7 @@ def public_files():
     paths = {ROOT / p for p in PUBLIC_FILES}
     for directory in ('c1ai', 'tests'):
         paths.update(p for p in (ROOT / directory).rglob('*')
-                     if p.is_file() and '__pycache__' not in p.parts and p.suffix in ('.py', '.ps1', '.json'))
+                     if p.is_file() and '__pycache__' not in p.parts and p.suffix in ('.py', '.ps1', '.json', '.icc'))
     for path in sorted(paths):
         if not path.is_file():
             raise FileNotFoundError(path.relative_to(ROOT))
@@ -37,6 +39,9 @@ def privacy_check(paths):
     sensitive = re.compile(r'gh[pousr]_[A-Za-z0-9]{30,}|github_pat_[A-Za-z0-9_]{35,}'
                            r'|sk-[A-Za-z0-9_-]{35,}|-----BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY-----')
     for path in paths:
+        if path.suffix=='.icc':
+            if path.read_bytes()[36:40]!=b'acsp':raise ValueError('Invalid ICC profile')
+            continue
         content = path.read_text(encoding='utf-8-sig')
         if sensitive.search(content):
             raise ValueError('Potential credential in ' + str(path.relative_to(ROOT)))

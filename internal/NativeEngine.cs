@@ -24,7 +24,7 @@ public static class C1NativeEngine
         public object Geometry=null!;
         public Task<object> Work=null!;
     }
-    static PreviewJob? previewJob;
+    static PreviewJob? previewJob,pixelPreviewJob;
     static object? Member(object? o,string name)
     {
         if(o==null)return null;
@@ -499,14 +499,17 @@ public static class C1NativeEngine
         int size=request.TryGetProperty("max_size",out var s)?s.GetInt32():1600;
         if(kind!="native"&&kind!="mask"||size<128||size>1600)throw new InvalidOperationException("invalid native preview kind/size");
         string revision=ProcessRevision(variant);
-        string key=Member(document,"UUID")+":"+Member(variant,"UUID")+":"+revision+":"+kind+":"+size+":"+LayerId(variant);
+        bool pixelBuffer=request.TryGetProperty("pixel_buffer",out var pb)&&pb.GetBoolean();
+        PreviewJob? currentJob=pixelBuffer?pixelPreviewJob:previewJob;
+        if(pixelBuffer&&kind!="native")throw new InvalidOperationException("pixel buffer requires native photo render");
+        string key=Member(document,"UUID")+":"+Member(variant,"UUID")+":"+revision+":"+kind+":"+size+":"+LayerId(variant)+":"+pixelBuffer;
         if(action=="preview_start")
         {
-            if(previewJob!=null&&!previewJob.Work.IsCompleted)
+            if(currentJob!=null&&!currentJob.Work.IsCompleted)
             {
-                if(previewJob.Key!=key)throw new InvalidOperationException("native preview still rendering; poll its id before starting another");
+                if(currentJob.Key!=key)throw new InvalidOperationException("native preview still rendering; poll its id before starting another");
             }
-            else if(previewJob==null||previewJob.Key!=key||previewJob.Work.IsFaulted||previewJob.Work.IsCanceled||!File.Exists(Member(previewJob.Work.Result,"path")?.ToString()))
+            else if(currentJob==null||currentJob.Key!=key||currentJob.Work.IsFaulted||currentJob.Work.IsCanceled||!File.Exists(Member(currentJob.Work.Result,"path")?.ToString()))
             {
                 // Snapshot all model data on C1's UI thread, then let C1's own scheduler render off-thread.
                 object settings=kind=="mask"?Invoke(Invoke(variant,"GetProcessSettingsNoLocalAdjLayers",true)!,"Get")!:Invoke(variant,"GetICProcessSettings")!;
@@ -533,14 +536,14 @@ public static class C1NativeEngine
                     object?[] args={settings,"C1 AI Preview",EnumValue("P1.C1.ImageCoreWrapper.ImageCore.ProcessQuality","PreviewHigh"),variant,document,bitmap,null,null,Enum.ToObject(method.GetParameters()[8].ParameterType,1),false};
                     var task=(Task)method.Invoke(null,args)!;
                     var job=new PreviewJob{Key=key,Revision=revision,Kind=kind,Geometry=geometry};
-                    job.Work=Task.Run(()=>FinishPreview(task,bitmap,settings));
-                    previewJob=job;
+                    job.Work=Task.Run(()=>FinishPreview(task,bitmap,settings,pixelBuffer));
+                    currentJob=job;if(pixelBuffer)pixelPreviewJob=job;else previewJob=job;
                 }
                 catch{((IDisposable)bitmap).Dispose();throw;}
             }
-            return new {preview_id=previewJob.Id,phase=previewJob.Work.IsCompleted?"ready":"rendering",revision};
+            return new {preview_id=currentJob.Id,phase=currentJob.Work.IsCompleted?"ready":"rendering",revision};
         }
-        var current=previewJob??throw new InvalidOperationException("preview expired; render again");
+        var current=currentJob??throw new InvalidOperationException("preview expired; render again");
         if(request.GetProperty("preview_id").GetString()!=current.Id||current.Key!=key)throw new InvalidOperationException("preview target or adjustments changed; render again");
         if(!current.Work.IsCompleted)return new {preview_id=current.Id,phase="rendering",revision};
         object artifact=current.Work.GetAwaiter().GetResult();
@@ -568,21 +571,41 @@ public static class C1NativeEngine
         return new {preview_id=current.Id,phase="ready",revision,artifact,kind=current.Kind,
             geometry=new {width=w,height=h,raw_dimensions=Member(variant,"ImageDimensions"),coordinate_convention="pixel edges; top-left origin; preview_map uses C1 nonlinear transform",raw_corners_and_center=Map(corners,"preview_to_raw"),source="VariantGeometryTransformer"}};
     }
-    static async Task<object> FinishPreview(Task render,object bitmap,object settings)
+    static async Task<object> FinishPreview(Task render,object bitmap,object settings,bool pixelBuffer)
     {
         string? temporary=null;
         try
         {
+            var timer=System.Diagnostics.Stopwatch.StartNew();
             await render.ConfigureAwait(false);
+            double renderWait=timer.Elapsed.TotalSeconds;
             if(Convert.ToInt32(Member(render,"Result"))!=0)throw new InvalidOperationException("native renderer returned "+Member(render,"Result"));
             int width=Convert.ToInt32(Member(bitmap,"Width")),height=Convert.ToInt32(Member(bitmap,"Height"));
             if(width<1||height<1||width>1700||height>1700)throw new InvalidOperationException("native bitmap dimensions outside preview bounds");
+            if(pixelBuffer)
+            {
+                // Owned native bitmap copy, not screen capture or arbitrary process-memory access.
+                var source=(System.Windows.Media.Imaging.BitmapSource)Invoke(bitmap,"ToBitmapSourceDeepCopy",false)!;
+                if(source.PixelWidth!=width||source.PixelHeight!=height)throw new InvalidOperationException("native pixel dimensions changed");
+                if(source.Format!=PixelFormats.Bgra32&&source.Format!=PixelFormats.Bgr32&&source.Format!=PixelFormats.Pbgra32&&source.Format!=PixelFormats.Rgb24)
+                    throw new InvalidOperationException("unsupported native pixel format: "+source.Format);
+                var converted=source.Format==PixelFormats.Bgra32?source:new System.Windows.Media.Imaging.FormatConvertedBitmap(source,PixelFormats.Bgra32,null,0);
+                int stride=checked(width*4);byte[] pixels=new byte[checked(stride*height)];converted.CopyPixels(pixels,stride,0);
+                double copyDone=timer.Elapsed.TotalSeconds;
+                string rawRoot=Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),"CaptureOneAI","native-pixels");Directory.CreateDirectory(rawRoot);
+                string rawHash=Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(pixels)).ToLowerInvariant();
+                string rawPath=Path.Combine(rawRoot,rawHash+".bgra");
+                temporary=Path.Combine(rawRoot,Guid.NewGuid().ToString("N")+".tmp");File.WriteAllBytes(temporary,pixels);File.Move(temporary,rawPath,true);temporary=null;
+                return new {path=rawPath,sha256=rawHash,width,height,stride,format="BGRA8",row_order="top-down",bit_depth=8,bytes=pixels.Length,
+                    timing_seconds=new {render_wait=renderWait,pixel_copy=copyDone-renderWait,hash_and_write=timer.Elapsed.TotalSeconds-copyDone}};
+            }
             string root=Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),"CaptureOneAI","native-previews");Directory.CreateDirectory(root);
             temporary=Path.Combine(root,Guid.NewGuid().ToString("N")+".tmp.png");
             if(Convert.ToInt32(Invoke(bitmap,"DumpToFileAsPng",temporary))!=0)throw new InvalidOperationException("native PNG encoding failed");
             string hash=Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(File.ReadAllBytes(temporary))).ToLowerInvariant();
             string path=Path.Combine(root,hash+".png");File.Move(temporary,path,true);temporary=null;
-            return new {path,sha256=hash,width,height,format="PNG",bytes=new FileInfo(path).Length};
+            return new {path,sha256=hash,width,height,format="PNG",bytes=new FileInfo(path).Length,
+                timing_seconds=new {render_wait=renderWait,png_encode_hash_write=timer.Elapsed.TotalSeconds-renderWait}};
         }
         finally{((IDisposable)bitmap).Dispose();GC.KeepAlive(settings);if(temporary!=null)File.Delete(temporary);}
     }
@@ -629,7 +652,7 @@ public static class C1NativeEngine
                 if(variant==null||document==null)throw new InvalidOperationException("no selected native photo");
                 var image=Member(variant,"Image");var variants=Items(Member(image,"Variants")).ToList();int ordinal=variants.FindIndex(v=>Member(v,"UUID")?.ToString()==Member(variant,"UUID")?.ToString())+1;
                 string label=Member(image,"FileName")?.ToString()??"";if(ordinal>1)label+=" ["+ordinal+"]";
-                data=new {target=Target(variant,document),image_path=Member(image,"FullpathFilename")?.ToString(),variant_label=label,layer_uuid=LayerId(variant),layers=Layers(variant),selected_count=Member(Member(Selection(document),"SelectedVariants"),"Count"),collection_uuid=Member(CurrentCollection(document),"UUID")?.ToString(),processing_engine=Convert.ToInt32(Member(variant,"ProcessingEngine"))};
+                data=new {target=Target(variant,document),image_path=Member(image,"FullpathFilename")?.ToString(),variant_label=label,layer_uuid=LayerId(variant),layers=Layers(variant),selected_count=Member(Member(Selection(document),"SelectedVariants"),"Count"),collection_uuid=Member(CurrentCollection(document),"UUID")?.ToString(),processing_engine=Convert.ToInt32(Member(variant,"ProcessingEngine")),process_revision=ProcessRevision(variant)};
             }
             else if(command=="layer")
             {

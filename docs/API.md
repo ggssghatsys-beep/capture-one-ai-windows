@@ -1,6 +1,6 @@
 # 接口说明
 
-MCP 与 CLI 共用六个命令。MCP 省略 JSON 的 command 字段；Python c1ai.client.call 和 CLI request --file 使用完整 JSON。只写登记候选，不能伪造目标、凭据和图层引用。
+原六个命令保持兼容；开发分支新增第七个只读命令 `analyze_image`，详见 [图像分析接口](SCOPES.md)。MCP 省略 JSON 的 command 字段；Python c1ai.client.call 和 CLI request --file 使用完整 JSON。只写登记候选，不能伪造目标、凭据和图层引用。
 
 | 工具 | 用途和主要字段 |
 |---|---|

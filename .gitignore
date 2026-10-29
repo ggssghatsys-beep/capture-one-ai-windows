@@ -42,3 +42,4 @@ requirements-tested.txt
 internal-token.txt
 candidates.json
 internal-engine.json
+artifacts/

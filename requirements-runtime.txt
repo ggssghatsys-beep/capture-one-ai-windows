@@ -1,3 +1,4 @@
 # Direct runtime dependencies used for this release. pip resolves their dependencies.
 mcp==1.30.0
 Pillow==13.0.0
+numpy>=2.3,<3

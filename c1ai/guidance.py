@@ -18,6 +18,7 @@ def workflow():
         'local_after_global': '先完成全局预览复核。仅在剩余问题局限于主体或背景时加蒙版；检查灰度蒙版覆盖，再用同一read/adjust接口调当前层。',
         'review': '用相同kind和max_size比较已实际查看的前后预览，检查主体层次、肤色、明暗细节、色彩关系及局部边缘。变亮或饱和度更高不自动代表更好。',
         'raw_limits': 'RAW通常有调整空间；渲染预览中的纯白/纯黑不能单独证明RAW传感器已经剪切，也不能保证细节一定可恢复。',
+        'image_metrics': 'analyze_image 返回当前完整渲染的 RGB、亮度、ROI 和横向分区数值。先检查 freshness、target、修订和色彩假设；窗口分析编号可通过 action=get 读取同一份数据。统计量辅助判断，不代替画面审美与 RAW 可恢复性判断。',
         'stop': '达到用户目标且没有明确剩余问题就停止。没有可解释的收益不继续试数值；方向不符时用新观察凭据恢复该模块已保存的值，或有意粘贴保存的完整模块快照。',
         'evidence': '参数回读成功只证明执行结果；必须实际看到新预览才能判断画面。图片回传不可用时说明缺口，不声称已看图或已改善。预览缓存最多8张，重要的前态需客户端在收到时保留。',
         'errors': '目标或观察过期则重新读取。写入超时/outcome_unknown先查原request_id的operations，禁止换编号重复执行。不要自动改用预设、UIA、截图识色或键鼠。',
@@ -82,7 +83,8 @@ def read_guidance(request, observation):
 
 
 MCP_INSTRUCTIONS = (
-    'Capture One Windows: six client-neutral tools using one serialized local owner. '
+    'Capture One Windows: six editing tools plus analyze_image, using one serialized local owner. '
+    'analyze_image returns direct numerical statistics from the rendered crop; check freshness, identity and color assumptions. '
     'Call context for the shared editing workflow, target and capabilities; read returns module guidance/units. '
     'Inspect a native preview before choosing adjustments. Edit one necessary module at a time, '
     'using absolute values and fresh observations. Suggested order: '+', '.join(ORDER)+'. '

@@ -12,6 +12,8 @@ def preview(backend, request, observation):
     started = time.monotonic()
     payload = {'command': 'read', 'kind': request.get('kind', 'native'),
                'max_size': request.get('max_size', 1600)}
+    raw=request.get('pixel_buffer') is True
+    if raw:payload['pixel_buffer']=True
     if request.get('action') == 'map_points':
         result = backend._model_call({**payload, 'scope': 'preview_map',
             'preview_id': request['preview_id'], 'points': request['points'],
@@ -27,17 +29,18 @@ def preview(backend, request, observation):
         if time.monotonic() - started > 25:
             raise NativeError('NATIVE_RENDER_PENDING', 'C1 is still rendering; a subsequent render reuses the same job',
                               {'preview_id': preview_id})
-        time.sleep(.08)
+        time.sleep(.02 if raw else .08)
     artifact = result['artifact']
-    root = (backend.state_dir / 'native-previews').resolve()
+    extension='.bgra' if raw else '.png'
+    root = (backend.state_dir / ('native-pixels' if raw else 'native-previews')).resolve()
     path = Path(artifact['path'])
-    if path.is_symlink() or path.resolve().parent != root or path.name != artifact['sha256'] + '.png':
+    if path.is_symlink() or path.resolve().parent != root or path.name != artifact['sha256'] + extension:
         raise NativeError('INVALID_NATIVE_PREVIEW_PATH', 'Native preview path is outside the owner cache')
     data = path.read_bytes()
     if hashlib.sha256(data).hexdigest() != artifact['sha256']:
         raise NativeError('NATIVE_PREVIEW_CHANGED', 'Native preview changed after rendering')
     # Native previews are already sized for AI input. Keep eight, without generating JPEG proxies.
-    old = sorted((p for p in root.glob('*.png') if len(p.stem) == 64
+    old = sorted((p for p in root.glob('*'+extension) if len(p.stem) == 64
                   and all(c in '0123456789abcdef' for c in p.stem) and p != path
                   and not p.is_symlink() and p.resolve().parent == root),
                  key=lambda p: p.stat().st_mtime, reverse=True)

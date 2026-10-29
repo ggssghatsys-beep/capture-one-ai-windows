@@ -1,6 +1,6 @@
 #requires -Version 7.6
 [CmdletBinding()]
-param([string]$Python='python', [string]$SessionPath, [switch]$EnvironmentOnly)
+param([string]$Python='python', [string]$SessionPath, [switch]$EnvironmentOnly, [switch]$WithScopes)
 $ErrorActionPreference='Stop'
 if(-not $IsWindows){throw 'This package requires Windows.'}
 $project=$PSScriptRoot
@@ -12,7 +12,8 @@ if(-not (Test-Path -LiteralPath $pythonExe)) {
  & $Python -m venv $venv
  if($LASTEXITCODE -ne 0){throw 'Could not create the local Python environment.'}
 }
-& $pythonExe -m pip install -r (Join-Path $project 'requirements-runtime.txt') $project
+$package=if($WithScopes){$project+'[scopes]'}else{$project}
+& $pythonExe -m pip install -r (Join-Path $project 'requirements-runtime.txt') $package
 if($LASTEXITCODE -ne 0){throw 'Installation failed; no C1 configuration was changed.'}
 $server=@{mcpServers=@{'capture-one-ai'=@{command=$pythonExe;args=@('-m','c1ai','mcp');env=@{PYTHONUTF8='1';PYTHONUNBUFFERED='1'}}}}
 $server|ConvertTo-Json -Depth 8|Set-Content -LiteralPath (Join-Path $project 'config\mcp-server.local.json') -Encoding utf8NoBOM
@@ -23,4 +24,9 @@ if(-not $EnvironmentOnly) {
  if($LASTEXITCODE -ne 0){throw 'Environment installed; Session configuration needs attention. See docs/INSTALL.md.'}
 }
 Write-Output 'Installed. MCP config: config/mcp-server.local.json'
+if($WithScopes){
+ & $pythonExe -m c1ai.scopes_window --autostart on --configure-only
+ if($LASTEXITCODE -ne 0){throw 'Could not save scopes startup preference.'}
+ & (Join-Path $project 'Setup-Shortcuts.ps1')
+}
 Write-Output 'Next: start Capture One through Start-CaptureOne.ps1, then run .\Run.ps1 context --compact.'

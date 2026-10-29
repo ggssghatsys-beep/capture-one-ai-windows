@@ -2,7 +2,7 @@
 
 让视觉 AI 在 Windows 上读取和调整 Capture One，并取得 C1 实际渲染的预览。提供 **MCP stdio + JSON CLI**，不绑定 AI 厂商、账号或聊天客户端。
 
-**0.2.0a1 预览版，实测 Capture One 16.8.6.3784 / Windows / Session。** 使用 C1 内部托管对象和原生处理内核，不是官方公开稳定 SDK。其他 C1 版本、Catalog 和多照片批量任务尚未完成兼容验证；启动器拒绝未验证版本。
+**0.3.0a1 预览版，实测 Capture One 16.8.6.3784 / Windows / Session。** 使用 C1 内部托管对象和原生处理内核，不是官方公开稳定 SDK。其他 C1 版本、Catalog 和多照片批量任务尚未完成兼容验证；启动器拒绝未验证版本。
 
 Native Capture One editing for Windows through MCP and a JSON CLI. Vision models plan edits; the local bridge executes them and returns real Capture One previews. Unofficial, version-specific, MIT-licensed.
 
@@ -15,10 +15,13 @@ Native Capture One editing for Windows through MCP and a JSON CLI. Vision models
 - 主体／背景 AI 蒙版；反相、复制、组合、羽化、渐变和亮度范围。
 - 模块重置与快照复用；当前集合内按 UUID 选图和翻页。
 - C1 原生照片／灰度蒙版预览，长边 128～1600 像素；预览与 RAW 坐标映射。
+- 独立波形窗口和 `analyze_image`：亮度波形、RGB Parade、线条直方图、带肤色参考箭头的矢量图，以及供 AI 读取的同源数值、ROI 和参考差值。见 [启动与接口说明](docs/SCOPES.md) 和 [验证记录](docs/SCOPES_VALIDATION.md)。0.3.0a1 新增；旧 0.2.0a1 ZIP 保持原样。
 
 全局和局部调整共用同一接口。正常流程不导入预设、不截图识色、不发送键鼠输入，不要求展开面板。清晰度、锐化、降噪、镜头／几何及人像精修不在当前范围；默认不切文档、不导出。
 
 ## 安装与启动
+
+希望让桌面 AI 帮你安装、把波形图启动器放到桌面并与 C1 一起打开，可复制 [AI 安装提示](docs/AI_INSTALL_PROMPT.md)。人用窗口，AI 用 MCP；两者共用同一图像分析核心，窗口关闭不影响 AI 读取数值。
 
 需要 64 位 Windows、有效授权的 C1 **16.8.6.3784**、64 位 Python 3.11+、PowerShell **7.6+** 与 .NET 10 Windows Desktop Runtime。本机验收 Python 3.14.7 / PowerShell 7.6.5，其他 Python 版本未逐项实测。安装依赖需要联网，运行库和 C1 均不随包分发。
 
@@ -30,9 +33,11 @@ Native Capture One editing for Windows through MCP and a JSON CLI. Vision models
 .\Run.ps1 context --compact
 ```
 
+需要配套窗口和桌面入口时，安装命令加 `-WithScopes`。已配置项目可执行 `Install.ps1 -WithScopes -EnvironmentOnly`；它会创建 **Capture One + AI**、**Capture One 图像分析** 两个快捷方式。前者启动 C1 并按设置联动窗口，后者可随时单独重开窗口。窗口“⋯”菜单可关闭自动联动；原厂快捷方式保持原样。详见 [启动模式](docs/SCOPES.md#启动模式与桌面入口)。
+
 在 C1 打开配置的 Session，选中照片。首次加载桥接时应先正常退出 C1，再用本项目启动器启动；仅打开普通 C1 快捷方式不会加载桥接。启动器默认不会关闭已运行的 C1；确需正常重启时显式传 `-Restart`。见 [安装说明](docs/INSTALL.md)。
 
-安装器生成 `config/mcp-server.local.json`，把它加入支持本地 MCP 的 AI 客户端。核心字段是本机 Python 路径和 `-m c1ai mcp`。刷新 MCP 连接即可取得六个工具定义；客户端须支持图片块并使用视觉模型。见 [AI 接入](docs/AI_CLIENTS.md)。
+安装器生成 `config/mcp-server.local.json`，把它加入支持本地 MCP 的 AI 客户端。核心字段是本机 Python 路径和 `-m c1ai mcp`。本版提供原六个工具及新增 `analyze_image`；旧 0.2.0a1 Release 为六个。客户端须支持图片块并使用视觉模型。见 [AI 接入](docs/AI_CLIENTS.md)。
 
 ## 一条编辑通道
 

@@ -2,11 +2,13 @@
 
 接口不绑定模型、账号或聊天。支持本机 MCP stdio 的客户端可以直接连接；能执行本机命令的 Agent 可以使用 JSON CLI。纯网页聊天需要自己的本地连接程序，本项目没有公网 HTTP 服务，也不保存云端模型密钥。
 
+可直接复制 [给桌面 AI 的安装提示](AI_INSTALL_PROMPT.md)，其中包括申请安装窗口、桌面启动器和随 C1 联动的步骤。
+
 ## MCP
 
 运行 Install.ps1 后使用 `config/mcp-server.local.json`。[示意配置](../config/mcp-server.example.json) 中的目录需要替换为安装目录。不同客户端外层配置格式可能不同，核心字段为 command、args、env。
 
-程序已安装到本地 Python 环境，可从其他工作目录启动，不依赖 cwd。六个工具为 context、images、read、adjust、preview、operations。视觉模型须收到 preview 的图片块；纯文本模型不能声称检查过画面。当前以标准 MCP SDK 客户端验证，没有逐个验收所有 AI 产品。
+程序已安装到本地 Python 环境，可从其他工作目录启动，不依赖 cwd。七个工具为 context、images、read、adjust、preview、operations、analyze_image。视觉模型须收到 preview 的图片块；纯文本模型不能声称检查过画面。当前以标准 MCP SDK 客户端验证，没有逐个验收所有 AI 产品。
 
 若工具仍显示旧定义（如 preview 只有 viewer/render、images 没有 variant_uuid），刷新 MCP 连接。默认使用 kind=native，无需为刷新工具重启 C1 或降级为截图。
 

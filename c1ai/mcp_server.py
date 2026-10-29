@@ -1,4 +1,4 @@
-"""Six typed tools using the official MCP Python SDK's stdio transport.
+"""Six existing tools plus image analysis using the official MCP SDK's stdio transport.
 
 This process never owns Capture One state or a UIA worker; the per-user owner
 outlives MCP client reconnects. The core performs capability/target validation.
@@ -209,6 +209,54 @@ def operations(action: Literal["get", "list", "reconcile"],
                operation_id: str | None = None, request_id: str | None = None) -> dict[str, Any]:
     """Read full logs or reconcile current evidence without dispatching recovery writes."""
     return _call("operations", action=action, operation_id=operation_id, request_id=request_id)
+
+
+@mcp.tool(structured_output=False)
+def analyze_image(action: Literal['refresh','status','get','reference','clear_reference','open_window'] = 'refresh',
+                  source: Literal['native','file'] = 'native', path: str | None = None,
+                  target: dict[str, Any] | None = None, roi: list[float] | None = None,
+                  analysis_id: str | None = None, reference_id: str | None = None,
+                  color_space: Literal['srgb','adobe_rgb','display_p3'] | None = None,
+                  view: Literal['waveform','parade','histogram','vectorscope'] | None = None,
+                  include_vectorscope: bool = False,
+                  include_histograms: bool = False,
+                  include_image: Literal['none','preview','waveform','parade','histogram','vectorscope'] = 'none') -> CallToolResult:
+    """Analyze the entire C1 rendered crop (never screen/viewport), or an explicit image file.
+
+    Returns structured RGB/Yprime/linear-Y percentiles, endpoint ratios and horizontal zone values.
+    ROI uses normalized IMAGE edges [left,top,right,bottom]. Encoded signal is 0..100%, NOT IRE.
+    color_space selects actual ICC conversion to sRGB, Adobe RGB (1998), or Display P3.
+    Missing source ICC is still assumed sRGB; a wider target cannot recover missing gamut.
+    Read freshness.state: stale/waiting/failed must not be treated as current adjustments.
+    analysis_id binds all numbers and optional image to one snapshot. reference pins an existing
+    ID; compare via reference_id on refresh/get. Same photo/crop/policy/ROI required.
+    get retrieves a window-created ID; status checks revision without rendering. Histograms are
+    opt-in exact bin counts. First version uses 8-bit previews and explicit ICC assumptions;
+    near-white ratios do not diagnose recoverability of RAW highlights. Native reads preserve
+    existing instance/document/variant/layer checks. This tool never edits or exports photos.
+    open_window explicitly opens/reuses the human viewer; optional view selects its chart.
+    It only acknowledges a launch request, not a fresh image. Other actions need no open window.
+    include_vectorscope returns chroma coordinates, 36 hue bins and a skin hue reference.
+    This reference is not skin detection; use an image ROI for relevant pixels. The vectorscope
+    image returns the same numerical summary, with no large density matrix in the response.
+    """
+    result = call({"command":"analyze_image",**{k:v for k,v in locals().copy().items() if v is not None}})
+    images=[]
+    artifact=result.get('artifact')
+    if artifact:
+        try:
+            root=(state_directory()/'analysis').resolve()
+            file=Path(artifact['path'])
+            if file.is_symlink() or file.resolve().parent!=root:
+                raise ValueError('Analysis artifact is outside its cache')
+            data=file.read_bytes()
+            if hashlib.sha256(data).hexdigest()!=artifact['sha256']:
+                raise ValueError('Analysis artifact hash mismatch')
+            images.append(Image(data=data,format='png').to_image_content())
+        except (OSError,KeyError,ValueError) as error:
+            result['image_error']=str(error)
+    return CallToolResult(content=[TextContent(type='text',text=json.dumps(result,ensure_ascii=False)),*images],
+                          structuredContent=result)
 
 
 def main():

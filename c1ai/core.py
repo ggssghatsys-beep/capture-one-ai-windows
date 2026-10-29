@@ -18,6 +18,7 @@ class Core:
         self.backend = backend
         self.journal = Journal(state_dir)
         self._lock = threading.RLock()
+        self._analysis = None
 
     def dispatch(self, request):
         with self._lock:
@@ -28,6 +29,14 @@ class Core:
                     request={**request,'kind':'native'}
                 digest(request)  # Reject non-JSON values, including NaN, before any work.
                 command = request["command"]
+                if command == "analyze_image":
+                    if request.get('action')=='open_window':
+                        from .scopes_launch import open_window
+                        return open_window(request.get('view'))
+                    if self._analysis is None:
+                        from .analysis_service import AnalysisService
+                        self._analysis = AnalysisService(self.backend, self.journal.state_dir)
+                    return self._analysis.dispatch(request, self._target)
                 if command == "context":
                     context = self.backend.context()
                     if request.get("include_dialogs") is True:

@@ -1,6 +1,6 @@
 #requires -Version 7.6
 [CmdletBinding()]
-param()
+param([switch]$WithAI)
 $ErrorActionPreference='Stop'
 if(-not $IsWindows){throw 'Desktop launchers are supported on Windows only.'}
 $desktop=[Environment]::GetFolderPath('DesktopDirectory')
@@ -10,6 +10,7 @@ $entries=@(
  @{Name='Capture One + AI';Script='Start-CaptureOne.ps1'},
  @{Name='Capture One 图像分析';Script='Scopes.ps1'}
 )
+if($WithAI){$entries+=@{Name='Capture One AI 修图';Script='AI.ps1'}}
 foreach($entry in $entries){
  $script=Join-Path $PSScriptRoot $entry.Script
  $path=Join-Path $desktop ($entry.Name+'.lnk')
@@ -21,7 +22,11 @@ foreach($entry in $entries){
  $link.Arguments='-NoProfile -WindowStyle Hidden -File "'+$script+'"'
  $link.WorkingDirectory=$PSScriptRoot
  $link.WindowStyle=7
- $link.Description=if($entry.Script -eq 'Scopes.ps1'){'打开或重用图像分析窗口，不重启 Capture One'}else{'通过原生桥接启动 C1，并按设置打开图像分析窗口'}
+ $link.Description=switch($entry.Script){
+  'Scopes.ps1' {'打开或重用图像分析窗口，不重启 Capture One'}
+  'AI.ps1' {'填写 API，通过原生桥接分析照片并在副本修图'}
+  default {'通过原生桥接启动 C1，并按设置打开图像分析窗口'}
+ }
  $icon='C:\Program Files\Capture One\Capture One\CaptureOne.exe'
  if(Test-Path -LiteralPath $icon){$link.IconLocation=$icon+',0'}
  $link.Save()

@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "capture-one-ai-rebuild"
-version = "0.3.0a2"
+version = "0.3.0a3"
 description = "Windows Capture One local owner, verified editing core, and CLI/MCP clients"
 readme = "README.md"
 license = "MIT"
@@ -19,11 +19,13 @@ Issues = "https://github.com/ggssghatsys-beep/capture-one-ai-windows/issues"
 [project.optional-dependencies]
 test = ["pytest>=8"]
 scopes = ["PySide6-Essentials>=6.8,<7", "av>=17.1,<18"]
+ai = ["openai>=2.30,<4", "PySide6-Essentials>=6.8,<7"]
 
 [project.scripts]
 c1ai = "c1ai.__main__:main"
 c1ai-mcp = "c1ai.mcp_server:main"
 c1ai-scopes = "c1ai.scopes_window:main"
+c1ai-ai = "c1ai.ai_window:main"
 
 [tool.setuptools]
 packages = ["c1ai"]

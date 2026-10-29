@@ -12,7 +12,9 @@
 
 ## 当前基线
 
-- 当前版本 0.3.0a2 / tag `v0.3.0-alpha.2`；此前公开版本 0.3.0a1、0.2.0a1 保留。实测 Windows + Capture One 16.8.6.3784 + Session。
+- 当前源码开发版 0.3.0a3 新增直接填写 API 的 AI 窗口，见 docs/AI_WINDOW.md。公开发布基线仍为 0.3.0a2；新窗口已做本机 C1 副本调用验收，真实模型/API 尚未联调。模型列表和思考等级从服务查询，禁止预填固定清单冒充支持能力。
+
+- 已发布版本 0.3.0a2 / tag `v0.3.0-alpha.2`；此前公开版本 0.3.0a1、0.2.0a1 保留。实测 Windows + Capture One 16.8.6.3784 + Session。
 - 分析窗口默认跟随当前图层蒙版；MCP analyze_image 保留默认整图语义，局部分析显式传 analysis_scope=active_layer。肤色参考不是皮肤检测，空蒙版不回退整图；详情见 docs/SCOPES.md。
 - **macOS 后端尚未实现或实机验证。** 迁移文档是开发交接，不是 Mac 使用说明。
 - 保留当前 Windows 功能，优先在同一项目中新增 Mac 平台实现，不重写全部系统。

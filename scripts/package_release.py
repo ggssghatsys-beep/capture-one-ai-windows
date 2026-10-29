@@ -20,6 +20,7 @@ PUBLIC_FILES = [
     'scripts/check_connection.py', 'scripts/configure.py', 'scripts/package_release.py',
     'scripts/check_release.py', 'Scopes.ps1', 'Setup-Shortcuts.ps1', 'scripts/probe_image_source.py',
     'scripts/check_scopes_live.py', 'docs/SCOPES.md', 'docs/SCOPES_VALIDATION.md', 'docs/AI_INSTALL_PROMPT.md',
+    'AI.ps1', 'docs/AI_WINDOW.md',
 ]
 
 

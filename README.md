@@ -2,6 +2,8 @@
 
 让视觉 AI 在 Windows 上读取和调整 Capture One，并取得 C1 实际渲染的预览。提供 **MCP stdio + JSON CLI**，不绑定 AI 厂商、账号或聊天客户端。
 
+**源码新增 0.3.0a3：可直接填写 API 的 AI 修图窗口。** 动态读取模型、查询思考等级，支持仅分析和副本修图，复用原有 MCP／原生接口。运行 `Install.ps1 -EnvironmentOnly -WithAI -WithScopes` 后打开 `AI.ps1`。本机 C1 调用已实测，真实云端模型联调待填入密钥；当前已发布基线仍为 0.3.0a2。详见 [AI 窗口使用与验证](docs/AI_WINDOW.md)。
+
 **0.3.0a2 预览版，实测 Capture One 16.8.6.3784 / Windows / Session。** 使用 C1 内部托管对象和原生处理内核，不是官方公开稳定 SDK。其他 C1 版本、Catalog 和多照片批量任务尚未完成兼容验证；启动器拒绝未验证版本。
 
 Native Capture One editing for Windows through MCP and a JSON CLI. Vision models plan edits; the local bridge executes them and returns real Capture One previews. Unofficial, version-specific, MIT-licensed.
@@ -72,6 +74,7 @@ AI 分析当前图层时调用 `analyze_image(analysis_scope="active_layer", inc
 |---|---|
 | [INSTALL](docs/INSTALL.md) | 安装、启动、配置、升级和排错 |
 | [AI_CLIENTS](docs/AI_CLIENTS.md) | 通用 MCP / CLI 接入与 AI 调色流程 |
+| [AI_WINDOW](docs/AI_WINDOW.md) | 直接填写 API、动态模型／思考等级、对话修图和验证边界 |
 | [API](docs/API.md) | 六个工具、请求示例、单位和返回值 |
 | [COLOR_API](docs/COLOR_API.md) | 混色器、色阶、图层、蒙版和模块复用 |
 | [NAVIGATION_PREVIEW](docs/NAVIGATION_PREVIEW.md) | 选图、原生预览和坐标映射 |

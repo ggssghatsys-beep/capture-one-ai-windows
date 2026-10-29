@@ -1,15 +1,26 @@
 # Capture One AI Windows
 
-让视觉 AI 在 Windows 上读取和调整 Capture One，并取得 C1 实际渲染的预览。提供 **MCP stdio + JSON CLI**，不绑定 AI 厂商、账号或聊天客户端。
+**直接填 API 对话修图，也可以接入桌面 AI 的 MCP；配套独立波形图和蒙版肤色分析。** 让视觉 AI 在 Windows 上读取和调整 Capture One，并取得 C1 实际渲染的预览。提供 **API 修图窗口 + MCP stdio + JSON CLI**，共用一套原生执行接口。
 
-**源码新增 0.3.0a3：可直接填写 API 的 AI 修图窗口。** 动态读取模型、查询思考等级，支持仅分析和副本修图，复用原有 MCP／原生接口。运行 `Install.ps1 -EnvironmentOnly -WithAI -WithScopes` 后打开 `AI.ps1`。本机 C1 调用已实测，真实云端模型联调待填入密钥；当前已发布基线仍为 0.3.0a2。详见 [AI 窗口使用与验证](docs/AI_WINDOW.md)。
+**0.3.0a3 新增 API 修图窗口：** 填写 API 地址和密钥 → 从服务读取模型 → 查询思考等级 → 输入需求，选择“仅分析”或“在副本修图”。无需另外安装聊天客户端。支持 **OpenAI Responses API** 及实现相同图片／工具调用协议的服务；仅有 Chat Completions 的接口暂不支持。模型和等级不使用固定清单，服务未提供的能力明确标为未知。
 
-**0.3.0a2 预览版，实测 Capture One 16.8.6.3784 / Windows / Session。** 使用 C1 内部托管对象和原生处理内核，不是官方公开稳定 SDK。其他 C1 版本、Catalog 和多照片批量任务尚未完成兼容验证；启动器拒绝未验证版本。
+**0.3.0a3 预览版，实测 Capture One 16.8.6.3784 / Windows / Session。** 本机 C1 副本读写、预览和蒙版分析已实测；**新 API 客户端的真实云端模型联调尚未完成**，不能据此保证所有模型或第三方兼容服务可用。使用 C1 内部托管对象和原生处理内核，不是官方公开稳定 SDK。其他 C1 版本、Catalog 和多照片批量任务尚未完成兼容验证；启动器拒绝未验证版本。
 
-Native Capture One editing for Windows through MCP and a JSON CLI. Vision models plan edits; the local bridge executes them and returns real Capture One previews. Unofficial, version-specific, MIT-licensed.
+Native Capture One editing for Windows with an optional direct API chat window, MCP and a JSON CLI. Enter a Responses API key, discover models and reasoning efforts from your provider, and edit protected variants using the existing native bridge. Includes scopes, mask-aware analysis and ROI statistics. Cloud model integration is pending live validation. Unofficial, version-specific, MIT-licensed.
+
+## 选择使用方式
+
+| 方式 | 怎么开始 |
+|---|---|
+| **直接填写 API** | 安装时加 `-WithAI -WithScopes`，打开桌面“Capture One AI 修图”，在“API 设置”填地址和密钥、读取模型、查询思考等级。见 [API 窗口说明](docs/AI_WINDOW.md) |
+| **接入已有桌面 AI** | 将生成的 `config/mcp-server.local.json` 加入支持本地 MCP 和图片的客户端。见 [MCP 接入](docs/AI_CLIENTS.md) |
+| **只看波形／直方图／矢量图** | 安装时加 `-WithScopes`，打开“Capture One 图像分析”，不需要 API 密钥 |
+
+API 修图会向所填服务发送照片预览、统计和必要的文件标识，不上传 RAW 原文件，并消耗该服务的 API 额度。密钥默认仅本次使用，也可选择 Windows 本机加密保存。只在登记副本上修改，保留原版本。
 
 ## 功能
 
+- **API 对话修图**：动态模型与思考等级查询、只读分析／副本编辑、停止后续操作、用量显示；原 MCP 接入方式保持兼容。
 - 曝光、对比度、亮度、饱和度、白平衡、HDR。
 - RGB / R / G / B 色阶；RGB / R / G / B / Luma **五通道原生曲线**。
 - Basic、Advanced、Skin 混色器；主色轮和阴影／中间调／高光色彩平衡。
@@ -41,21 +52,23 @@ AI 分析当前图层时调用 `analyze_image(analysis_scope="active_layer", inc
 下载 [Releases](https://github.com/ggssghatsys-beep/capture-one-ai-windows/releases) 的 Windows ZIP，解压到固定目录。在该目录的 PowerShell 7 中执行：
 
 ```powershell
-.\Install.ps1 -SessionPath 'D:\Photos\MySession\MySession.cosessiondb'
+.\Install.ps1 -WithAI -WithScopes -SessionPath 'D:\Photos\MySession\MySession.cosessiondb'
 .\Start-CaptureOne.ps1
-.\Run.ps1 context --compact
+.\AI.ps1
 ```
+
+已有项目和 Session 配置时，执行 `Install.ps1 -EnvironmentOnly -WithAI -WithScopes` 补装 API 窗口。会增加“Capture One AI 修图”桌面入口；打开后填入自己的 API 配置，建议先点“仅分析”。不使用内置 API 窗口时可省略 `-WithAI`。
 
 需要配套窗口和桌面入口时，安装命令加 `-WithScopes`。已配置项目可执行 `Install.ps1 -WithScopes -EnvironmentOnly`；它会创建 **Capture One + AI**、**Capture One 图像分析** 两个快捷方式。前者启动 C1 并按设置联动窗口，后者可随时单独重开窗口。窗口“⋯”菜单可关闭自动联动；原厂快捷方式保持原样。详见 [启动模式](docs/SCOPES.md#启动模式与桌面入口)。
 
 在 C1 打开配置的 Session，选中照片。首次加载桥接时应先正常退出 C1，再用本项目启动器启动；仅打开普通 C1 快捷方式不会加载桥接。启动器默认不会关闭已运行的 C1；确需正常重启时显式传 `-Restart`。见 [安装说明](docs/INSTALL.md)。
 
-安装器生成 `config/mcp-server.local.json`，把它加入支持本地 MCP 的 AI 客户端。核心字段是本机 Python 路径和 `-m c1ai mcp`。本版提供原六个工具及新增 `analyze_image`；旧 0.2.0a1 Release 为六个。客户端须支持图片块并使用视觉模型。见 [AI 接入](docs/AI_CLIENTS.md)。
+使用外部桌面 AI 时，将安装器生成的 `config/mcp-server.local.json` 加入该客户端；内置 API 窗口无需另外导入 MCP 配置。核心字段是本机 Python 路径和 `-m c1ai mcp`。本版提供原六个工具及新增 `analyze_image`；旧 0.2.0a1 Release 为六个。外部客户端须支持图片块并使用视觉模型。见 [AI 接入](docs/AI_CLIENTS.md)。
 
 ## 一条编辑通道
 
 ```text
-视觉 AI → MCP / CLI → 串行执行器与操作记录 → C1 内部命名管道
+API 修图窗口 / 外部视觉 AI → 同一 MCP 工具 / CLI → 串行执行器与操作记录 → C1 内部命名管道
        → C1 原生参数／图层／蒙版对象 → 参数回读 + C1 原生预览
 ```
 

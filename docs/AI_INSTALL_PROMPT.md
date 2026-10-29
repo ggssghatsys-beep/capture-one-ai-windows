@@ -2,7 +2,17 @@
 
 适用于能在本机读取文件、执行命令及配置 MCP 的桌面 AI。Windows 版目前只验证 **Capture One 16.8.6.3784 + Session**；不要把此包当作 Mac 版本。没有本机权限的网页聊天不能直接完成安装。
 
-把下面文字和本项目 GitHub 地址或已解压文件夹一起交给 AI：
+把下面文字和本项目 GitHub 地址或已解压文件夹一起交给 AI。已有桌面 AI 的 MCP 接法仍可用；希望之后直接填写 API 使用时，优先用下一段：
+
+## 安装 API 修图窗口和波形图
+
+> 请帮我安装本项目 0.3.0a3 或更新的适用 Windows 版，包含可填写 API 的 AI 修图窗口和波形图。先读 README、AGENTS.md、docs/INSTALL.md、docs/AI_WINDOW.md，确认 Windows、Capture One 16.8.6.3784、Python、PowerShell、.NET 和我的实际 Session。首次用 Install.ps1 -WithAI -WithScopes 配置真实 Session；已有等效配置时加 -EnvironmentOnly，不改会话。
+>
+> 请用 Setup-Shortcuts.ps1 -WithAI 把“Capture One + AI”“Capture One 图像分析”“Capture One AI 修图”启动器放到桌面，不覆盖其他安装目录的快捷方式。告诉我在本地“API 设置”里自行填写地址和密钥，然后“读取模型”“查询思考等级”，先用“仅分析”确认连接，再用“在副本修图”。不要要求我把密钥发到聊天或写进公开仓库。
+>
+> 保留原照片、已有配置和候选登记，不强杀 C1。升级时按 INSTALL.md 处理本项目旧窗口和 owner，不影响其他 Python 程序。安装验收只读 context、预览和分析，不为了验收修改照片。说明当前仅支持 Responses 图片／工具调用协议，以及 API 客户端真实云端联调的公开验证边界。
+
+## 仅接入已有桌面 AI 的 MCP 与波形图
 
 > 请帮我安装这个 Capture One Windows MCP 项目，并安装配套图像分析窗口。先阅读项目 README、AGENTS.md 和 docs/INSTALL.md，核对 Capture One 是否为 16.8.6.3784，以及 Windows、Python、PowerShell、.NET 是否符合要求。请使用固定安装目录，运行 Install.ps1 -WithScopes，并按我的实际 Session 配置 MCP；不要编造路径或绕过版本校验。
 >
@@ -13,6 +23,8 @@
 > 保留原照片及已有设置，不自动强制退出 C1。若首次加载桥接需要我保存工作、正常退出再打开，请说明原因。最后检查 MCP 的 context、只读预览和 analyze_image，并告诉我安装位置、桌面入口和已验证／未验证项。不要为了验证安装修改照片。
 
 ## 安装 AI 应如何执行
+
+- 用户选择 API 窗口时，使用 `-WithAI -WithScopes` 和 `Setup-Shortcuts.ps1 -WithAI`；其密钥由用户在本地窗口填写。仅请求 MCP 时，不擅自安装 API 客户端或配置云端账号。
 
 - 用户只请求安装 MCP 时，不擅自启用窗口或创建桌面图标；可先提示：“需要同时安装波形／直方图窗口，并把启动器放到桌面吗？”用户已使用上面的提示或已明确要求，就直接执行，不重复询问。
 - 初装：`Install.ps1 -WithScopes -SessionPath '用户真实会话路径'`。此选项安装 Qt/PyAV、启用联动并创建两个桌面快捷方式。

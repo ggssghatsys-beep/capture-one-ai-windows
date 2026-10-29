@@ -18,6 +18,22 @@
 
 ## 启动与连接
 
+### 直接填写 API 修图（0.3.0a3）
+
+首次安装可选完整入口：
+
+```powershell
+.\Install.ps1 -WithAI -WithScopes -SessionPath 'D:\Photos\MySession\MySession.cosessiondb'
+.\Start-CaptureOne.ps1
+.\AI.ps1
+```
+
+已有 Session 配置时用 `Install.ps1 -WithAI -WithScopes -EnvironmentOnly`。桌面会有“Capture One AI 修图”，打开后填写 API 地址、密钥，从服务读取模型并查询思考等级，然后输入需求。内置窗口不需要再配置另一个 MCP 聊天客户端。模型必须支持 Responses API 的图片输入与工具调用；仅有 Chat Completions 的服务不适用。详见 [AI_WINDOW](AI_WINDOW.md)，其中明确列出真实云端联调尚待完成。
+
+`-WithAI` 安装 API 客户端与 Qt；`-WithScopes` 另外安装波形计算依赖。只使用外部 MCP 时不需要这两个可选组件。API 密钥只填在本地窗口中，不粘贴进仓库或发给负责安装的 AI。图片预览和相关工具数据会发送至你填写的服务，API 费用／活动额度以服务方规则为准。
+
+### 原生桥接与外部 MCP
+
 需要人看的波形／直方图窗口时，安装加 `-WithScopes`，例如 `Install.ps1 -WithScopes -SessionPath 'D:\Photos\MySession\MySession.cosessiondb'`。已有配置只补窗口可用 `Install.ps1 -WithScopes -EnvironmentOnly`。该选项会启用随项目启动器打开窗口，并创建两个桌面快捷方式；仅安装 MCP 不需要 Qt/PyAV，也不创建图标。复制给桌面 AI 的操作提示见 [AI_INSTALL_PROMPT](AI_INSTALL_PROMPT.md)。
 
 首次先保存并正常退出 C1，再执行：
@@ -37,9 +53,11 @@
 
 owner 驻留，关闭聊天不一定关闭 owner。Session 配置在 owner 启动时加载，因此配置工具在 owner 运行且配置需要变更时会拒绝写入，防止表面切换成功、实际仍用旧 Session。
 
-需要更改配置或安装另一代码版本时：先完成所有操作，关闭分析窗口并断开 MCP 客户端；在任务管理器“详细信息”中显示“命令行”，核对完整程序路径，仅结束本安装目录中参数为 `-m c1ai owner --serve` 的 `python.exe` 或 `pythonw.exe` 后台进程。无法准确识别时，退出应用后注销再登录 Windows。不要结束其他 Python 进程。随后配置／安装并重新连接。未决写入先用 operations 查询，不能直接终止 owner。
+需要更改配置或安装另一代码版本时：先完成所有操作，关闭 AI 修图窗口和分析窗口，并断开 MCP 客户端；在任务管理器“详细信息”中显示“命令行”，核对完整程序路径，仅结束本安装目录中参数为 `-m c1ai owner --serve` 的 `python.exe` 或 `pythonw.exe` 后台进程。无法准确识别时，退出应用后注销再登录 Windows。不要结束其他 Python 进程。随后配置／安装并重新连接。未决写入先用 operations 查询，不能直接终止 owner。
 
 从 0.3.0a1 升到 0.3.0a2：把新版解压到固定安装目录，按上述步骤退出旧辅助进程，执行 `Install.ps1 -WithScopes -EnvironmentOnly`，然后重连 MCP 并打开桌面分析入口。已有用户配置、候选登记、照片和 Session 保留，不要从其他用户复制状态目录。该版本未修改 C1 启动钩子或原生引擎，已正常连接的 C1 无需为此升级重启。
+
+升级到 0.3.0a3 并启用 API：按上述步骤安装新版，执行 `Install.ps1 -WithAI -WithScopes -EnvironmentOnly`，打开 `AI.ps1` 或桌面“Capture One AI 修图”。本版也未修改原生引擎或启动钩子，C1 无需仅为本次升级重启。只继续使用现有 MCP 时可以不加 `-WithAI`。
 
 引擎源码更新通过 internal/build.ps1 发布并校验，通常可以热加载；启动钩子改变才需要重启 C1。日常调参、切工具和刷新 MCP 都不需要重启。
 

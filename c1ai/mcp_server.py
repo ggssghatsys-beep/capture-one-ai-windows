@@ -219,6 +219,7 @@ def analyze_image(action: Literal['refresh','status','get','reference','clear_re
                   color_space: Literal['srgb','adobe_rgb','display_p3'] | None = None,
                   view: Literal['waveform','parade','histogram','vectorscope'] | None = None,
                   include_vectorscope: bool = False,
+                  analysis_scope: Literal['image','active_layer'] | None = None,
                   include_histograms: bool = False,
                   include_image: Literal['none','preview','waveform','parade','histogram','vectorscope'] = 'none') -> CallToolResult:
     """Analyze the entire C1 rendered crop (never screen/viewport), or an explicit image file.
@@ -237,6 +238,10 @@ def analyze_image(action: Literal['refresh','status','get','reference','clear_re
     open_window explicitly opens/reuses the human viewer; optional view selects its chart.
     It only acknowledges a launch request, not a fresh image. Other actions need no open window.
     include_vectorscope returns chroma coordinates, 36 hue bins and a skin hue reference.
+    analysis_scope=active_layer restricts all statistics/scopes to the current native layer mask,
+    weighted by grayscale coverage (feathering retained), intersected with ROI. Background means
+    whole image. Default image preserves the old contract. Empty masks return freshness=empty,
+    never whole-image fallback. Pixels are final composite colors, not isolated layer colors.
     This reference is not skin detection; use an image ROI for relevant pixels. The vectorscope
     image returns the same numerical summary, with no large density matrix in the response.
     """

@@ -50,6 +50,7 @@ class Pixels:
     valid: np.ndarray
     metadata: dict
     alpha: np.ndarray
+    mask_weights: np.ndarray | None = None
 
     @property
     def space(self):return self.metadata['color'].get('analysis_space_id','srgb')
@@ -140,12 +141,35 @@ def roi_bounds(roi, width, height):
     return [math.floor(l*width), math.floor(t*height), math.ceil(r*width), math.ceil(b*height)]
 
 
+def apply_mask(pixels, data, geometry, expected_geometry):
+    """Native gray mask is coverage, never a color-managed photograph."""
+    if geometry != expected_geometry:
+        raise ValueError('Native mask and photo geometry differ; cannot align safely')
+    with Image.open(io.BytesIO(data)) as im:
+        im.load()
+        if im.size != tuple(pixels.metadata['analysis_size']):
+            raise ValueError('Native mask and photo sizes differ')
+        rgba=np.asarray(im.convert('RGBA'))
+        if not (np.array_equal(rgba[:,:,0],rgba[:,:,1]) and np.array_equal(rgba[:,:,1],rgba[:,:,2]) and (rgba[:,:,3]==255).all()):
+            raise ValueError('Native mask must be opaque grayscale coverage')
+        coverage=rgba[:,:,0].copy()
+    weights=coverage.astype(np.float64)/255
+    weights[~pixels.valid]=0
+    valid=weights>0
+    meta={**pixels.metadata,'mask_sha256':hashlib.sha256(data).hexdigest(),
+          'sample_mask_sha256':hashlib.sha256(coverage.tobytes()+pixels.valid.tobytes()).hexdigest(),
+          'mask_weighting':'native grayscale coverage / 255; no threshold; excludes zero coverage',
+          'pixel_sha256':hashlib.sha256(pixels.metadata['pixel_sha256'].encode()+coverage.tobytes()).hexdigest()}
+    return Pixels(pixels.rgb,valid,meta,pixels.alpha,weights)
+
+
 def region_metadata(pixels: Pixels, roi=None):
     h,w=pixels.valid.shape
     l,t,r,b=roi_bounds(roi,w,h)
     count=int(pixels.valid[t:b,l:r].sum())
-    if not count:raise ValueError('ROI contains no opaque pixels')
-    return {'roi_normalized':list(roi or [0,0,1,1]),'roi_pixels':[l,t,r,b],'pixel_count':count}
+    return {'roi_normalized':list(roi or [0,0,1,1]),'roi_pixels':[l,t,r,b],'pixel_count':count,
+            **({'effective_pixel_count':float(pixels.mask_weights[t:b,l:r].sum()),
+                'count_units':'coverage-weighted pixels','percentile_method':'weighted inverse CDF'} if pixels.mask_weights is not None else {})}
 
 
 def analyze(pixels: Pixels, roi=None):
@@ -161,7 +185,22 @@ def analyze(pixels: Pixels, roi=None):
     linear = sum(linear_table[rgb[:,:,i]]*weights[i] for i in range(3))
     signals = {'red': rgb[:,:,0], 'green': rgb[:,:,1], 'blue': rgb[:,:,2], 'luma': encoded}
     quantiles=np.array([1,5,50,95,99])
-    def summarize(samples, byte_channel=False):
+    coverage=None if pixels.mask_weights is None else pixels.mask_weights[t:b,l:r]
+    def summarize(samples, byte_channel=False, sample_weights=None):
+        if sample_weights is not None:
+            total=sample_weights.sum()
+            counts=np.bincount(samples,weights=sample_weights,minlength=256) if byte_channel else None
+            values=samples/255 if byte_channel else samples
+            if byte_channel:
+                sorted_values=_U8;cumulative=np.cumsum(counts)
+            else:
+                order=np.argsort(values);sorted_values=values[order];cumulative=np.cumsum(sample_weights[order])
+            indices=np.minimum(np.searchsorted(cumulative,total*quantiles/100),len(sorted_values)-1)
+            percentiles=sorted_values[indices]
+            mean=float(values@sample_weights/total)
+            near_black=sample_weights[values<=.01].sum()/total;near_white=sample_weights[values>=.99].sum()/total
+            return {'mean_percent':mean*100,'percentiles_percent':{f'P{q}':float(v*100) for q,v in zip(quantiles,percentiles)},
+                    'near_black_percent':float(near_black*100),'near_white_percent':float(near_white*100)},counts
         if byte_channel:
             counts=np.bincount(samples,minlength=256)
             cumulative=np.cumsum(counts);size=samples.size
@@ -182,11 +221,11 @@ def analyze(pixels: Pixels, roi=None):
     histograms, stats = {}, {}
     for name, signal in {**signals, 'linear_luminance': linear}.items():
         samples = signal[valid]
-        stats[name],counts=summarize(samples,name in ('red','green','blue'))
+        stats[name],counts=summarize(samples,name in ('red','green','blue'),None if coverage is None else coverage[valid])
         if name in signals:
             if counts is None:
                 bins = np.minimum(255, np.floor(samples*256)).astype(np.uint8)
-                counts=np.bincount(bins,minlength=256)
+                counts=np.bincount(bins,weights=None if coverage is None else coverage[valid],minlength=256)
                 if name=='luma' and [l,t,r,b]==[0,0,w,h] and valid.all():
                     # The plot consumes the same quantization, not a second full luma pass.
                     pixels.__dict__['signal_bins']=bins.reshape(h,w)
@@ -201,12 +240,12 @@ def analyze(pixels: Pixels, roi=None):
             samples=signal[:,a:z][mask]
             if not samples.size:values[name]=None
             else:
-                summary,_=summarize(samples,name!='luma');p=summary.pop('percentiles_percent')
+                summary,_=summarize(samples,name!='luma',None if coverage is None else coverage[:,a:z][mask]);p=summary.pop('percentiles_percent')
                 values[name]={**summary,**{q:p[q] for q in ('P5','P50','P95')}}
         horizontal.append({'image_x_normalized':[(l+a)/w,(l+z)/w],
                            'roi_x_normalized':[a/(r-l),z/(r-l)],'pixel_count':int(mask.sum()),'channels':values})
     return {'roi_normalized': list(roi or [0,0,1,1]), 'roi_pixels': [l,t,r,b],
-            'pixel_count': int(valid.sum()), 'statistics': stats, 'histograms': histograms,
+            **region_metadata(pixels,roi), 'statistics': stats, 'histograms': histograms,
             'horizontal_distribution':horizontal}
 
 
@@ -215,6 +254,8 @@ def compare(current: dict, reference: dict):
     for key in ('photo_key', 'source', 'policy', 'analysis_size', 'color', 'crop_signature'):
         if current[key] != reference[key]:
             raise ValueError('Reference is not comparable: '+key+' changed')
+    if current.get('sample_mask_sha256')!=reference.get('sample_mask_sha256') or current.get('analysis_scope')!=reference.get('analysis_scope'):
+        raise ValueError('Reference mask or analysis scope changed')
     a, b = current['region'], reference['region']
     if a['roi_pixels'] != b['roi_pixels'] or a['pixel_count'] != b['pixel_count']:
         raise ValueError('Reference ROI or sample population changed')
@@ -238,7 +279,7 @@ def scope_image(pixels: Pixels, roi=None, mode='waveform', vector=None, histogra
         return render(vector if vector is not None else calculate(pixels,roi))
     h,w = pixels.valid.shape
     l,t,r,b = roi_bounds(roi,w,h)
-    if not pixels.valid[t:b,l:r].all():
+    if pixels.mask_weights is None and not pixels.valid[t:b,l:r].all():
         raise ValueError('Scope rendering requires opaque input; numeric stats exclude transparent pixels')
     rgb = pixels.rgb[t:b,l:r]
     luma = pixels.signal_bins[t:b,l:r] if mode!='parade' else None
@@ -264,7 +305,17 @@ def scope_image(pixels: Pixels, roi=None, mode='waveform', vector=None, histogra
     font=ImageFont.load_default(size=22)
     colors = {'red': (255,85,90), 'green': (93,235,151), 'blue': (91,151,255), 'luma': (225,231,240)}
     if mode in ('waveform','parade'):
-        panel = (render(np.repeat(luma[:,:,None],3,axis=2),1) if mode=='waveform' else render(rgb,7))
+        if pixels.mask_weights is not None:
+            coverage=pixels.mask_weights[t:b,l:r];columns=np.broadcast_to(np.arange(r-l),coverage.shape)
+            panels=[]
+            for i,signal in enumerate([luma] if mode=='waveform' else [rgb[:,:,i] for i in range(3)]):
+                density=np.bincount(((255-signal.astype(np.int32))*(r-l)+columns).ravel(),
+                    weights=coverage.ravel(),minlength=256*(r-l)).reshape(256,r-l)
+                intensity=255*np.log1p(density)/max(1,float(np.log1p(density).max()))
+                color=np.ones(3) if mode=='waveform' else np.eye(3)[i]
+                panels.append((intensity[:,:,None]*color).astype(np.uint8))
+            panel=Image.fromarray(np.concatenate(panels,axis=1))
+        else:panel = (render(np.repeat(luma[:,:,None],3,axis=2),1) if mode=='waveform' else render(rgb,7))
         if mode=='waveform':
             # FFmpeg tints RGB traces. Preserve trace density and make Yprime neutral white.
             white=np.array(panel).max(axis=2)
@@ -284,9 +335,10 @@ def scope_image(pixels: Pixels, roi=None, mode='waveform', vector=None, histogra
     elif mode == 'histogram':
         # Render the exact same count arrays returned to AI as lines, without filled areas.
         if histograms is None:
-            histograms={name:np.bincount(rgb[:,:,i].ravel(),minlength=256) for i,name in enumerate(['red','green','blue'])}
-            histograms['luma']=np.bincount(luma.ravel(),minlength=256)
-        peak=max(int(max(v)) for v in histograms.values()) or 1
+            weights=None if pixels.mask_weights is None else pixels.mask_weights[t:b,l:r].ravel()
+            histograms={name:np.bincount(rgb[:,:,i].ravel(),weights=weights,minlength=256) for i,name in enumerate(['red','green','blue'])}
+            histograms['luma']=np.bincount(luma.ravel(),weights=weights,minlength=256)
+        peak=max(float(max(v)) for v in histograms.values()) or 1
         # Normalize first: log arguments span only 1..10, never 1..millions.
         # Display compression only; the AI still receives unmodified counts.
         for tick in (0,.25,.5,.75,1):

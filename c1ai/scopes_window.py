@@ -43,9 +43,11 @@ class Worker(QThread):
         from .client import call
         started=time.perf_counter()
         try:
-            result=call(self.request,timeout=45)
+            payload=dict(self.request);purpose=payload.pop('_purpose',None)
+            result=call(payload,timeout=45)
         except Exception as error:
             result={'status':'failed','freshness':{'state':'failed'},'error':str(error)}
+        if purpose:result['_purpose']=purpose
         result['_window_request_seconds']=time.perf_counter()-started
         self.result.emit(self.generation,result)
 
@@ -59,8 +61,9 @@ class ScopeWindow(QWidget):
         self.resize(640,320);self.setMinimumSize(320,160)
         self.generation=0; self.worker=None; self.paused=False; self.pending=None
         self.path=path; self.record=None; self.reference=None; self.pixmap=QPixmap();self.displayed_id=None
+        self.region_dialog=None;self.pending_region=None
         self.next_delay=100;self.latency_log=deque(maxlen=32);self.artifact_key=None;self.artifact_kind=None
-        self.setStyleSheet('QWidget {background:#151b24;color:#e5edf7;font-size:12px;} '
+        self.setStyleSheet('QWidget {background:#151b24;color:#e5edf7;font-size:12px;font-family:"Microsoft YaHei UI","Microsoft YaHei";} '
                           'QPushButton,QToolButton,QComboBox,QDoubleSpinBox {background:#263242;padding:3px;border:1px solid #41516a;border-radius:3px;}'
                           'QPushButton:checked {background:#315679;border:1px solid #83b9e8;}')
         layout=QVBoxLayout(self);layout.setContentsMargins(4,4,4,4);layout.setSpacing(3)
@@ -92,6 +95,9 @@ class ScopeWindow(QWidget):
         self.autostart.setChecked(self.settings.value('autostart',False,type=bool))
         self.autostart.toggled.connect(self.set_autostart)
         menu.addSeparator()
+        self.layer_scope=menu.addAction('跟随当前图层蒙版');self.layer_scope.setCheckable(True);self.layer_scope.setChecked(True)
+        self.layer_scope.toggled.connect(self.changed)
+        menu.addAction('在预览中框选区域…',self.pick_region)
         menu.addAction('区域、数值与状态…',self.show_details)
         menu.addAction('固定当前参考',self.pin);menu.addAction('清除参考',self.clear_reference)
         menu.addSeparator();menu.addAction('打开图像文件…',self.open_file);menu.addAction('跟随 C1',self.follow_native)
@@ -121,6 +127,20 @@ class ScopeWindow(QWidget):
             if self.reference:request['reference_id']=self.reference
             self.send(request)
         else:self.tick(True)
+
+    def pick_region(self):
+        if self.record and self.record.get('analysis'):
+            self.send({'action':'get','analysis_id':self.record['analysis']['analysis_id'],
+                       'include_image':'preview','include_statistics':False,'_purpose':'roi'})
+        else:self.tick(True)
+
+    def apply_region(self,roi,snapshot):
+        current=(self.record or {}).get('analysis',{})
+        if current.get('target')!=snapshot['target'] or current.get('crop_signature')!=snapshot.get('crop_signature'):
+            self.region_dialog.note.setText('照片、图层或裁剪已变化，请重新打开框选。');return
+        self.pending_region=list(roi)
+        self.send({'action':'get','analysis_id':snapshot['analysis_id'],'include_statistics':False,
+                   'target':snapshot['target'] if not self.path else None,'_purpose':'apply_roi'})
 
     def color_changed(self,*args):
         self.settings.setValue('color_space',self.color_space.currentData())
@@ -200,6 +220,7 @@ class ScopeWindow(QWidget):
     def tick(self,force=False):
         if self.worker is not None or self.paused and not force:return
         request={'action':'refresh','source':'file' if self.path else 'native',
+                 'analysis_scope':'active_layer' if not self.path and self.layer_scope.isChecked() else 'image',
                  'include_statistics':self.details.isVisible(),
                  'include_vectorscope':self.mode.currentIndex()==list(VIEWS).index('vectorscope'),
                  'include_image':list(VIEWS)[self.mode.currentIndex()],
@@ -220,6 +241,21 @@ class ScopeWindow(QWidget):
     def receive(self,generation,result):
         if generation!=self.generation:return
         received=time.perf_counter()
+        if result.get('_purpose')=='apply_roi':
+            if result.get('freshness',{}).get('state') in ('ready','empty') and self.pending_region is not None:
+                for box,value in zip(self.roi,self.pending_region):
+                    box.blockSignals(True);box.setValue(value);box.blockSignals(False)
+                self.region_dialog.accept();self.changed()
+            else:self.region_dialog.note.setText('照片、图层或调整已变化，请重新打开框选。')
+            self.pending_region=None;return
+        if result.get('_purpose')=='roi':
+            if result.get('freshness',{}).get('state') in ('ready','empty') and result.get('artifact'):
+                from .scopes_roi import RegionDialog
+                if self.region_dialog:self.region_dialog.close()
+                self.region_dialog=RegionDialog(result['artifact']['path'],result['analysis'],[v.value() for v in self.roi],self)
+                self.region_dialog.applied.connect(self.apply_region);self.region_dialog.show()
+            else:self.state.setText('预览已过期，请等待更新后重新框选')
+            self.displayed_id=None;return
         if result.get('action')=='clear_reference':
             self.state.setText('已清除参考')
             self.stats.setText(self.stats.text().split('\n参考差值：')[0])
@@ -228,19 +264,25 @@ class ScopeWindow(QWidget):
         state=result.get('freshness',{}).get('state','failed')
         delay=refresh_delay_ms(result)
         self.next_delay=delay
-        names={'ready':'可用','waiting':'等待更新','stale':'已过期：保留旧结果','failed':'连接或分析失败'}
+        names={'ready':'可用','waiting':'等待更新','stale':'已过期：保留旧结果','failed':'连接或分析失败','empty':'当前蒙版与 ROI 没有覆盖像素'}
         detail=result.get('error') or result.get('image_error') or ''
         self.state.setText(names.get(state,state)+((' · '+str(detail)) if detail else ''))
         self.status_dot.setStyleSheet('color:'+{'ready':'#86c99a','waiting':'#d9ad66','stale':'#d9ad66','failed':'#ef8585'}.get(state,'#ef8585'))
         self.status_dot.setToolTip(self.state.text())
         data=result.get('analysis')
+        old_target=(data or {}).get('target')
+        if state=='empty' or result.get('current_target') and old_target and result['current_target']!=old_target:
+            self.canvas.clear();self.canvas.setText('等待当前图层分析' if state!='empty' else names['empty'])
+            self.pixmap=QPixmap();self.artifact_key=None;self.displayed_id=None
+            if state!='empty':return
         if not data:
             if not result.get('unchanged'):self.record_latency(result,received,delay)
             return
         self.record=result
         target=data['target'];label=(target.get('variant') or {}).get('label') or Path(target['image']['path']).name
         revision=data.get('revision');size=data['analysis_size']
-        self.identity.setText(f"{label} · {data['source']} · {size[0]} × {size[1]} · 修订 {revision}\n分析编号 {data['analysis_id']}")
+        layer=data.get('mask_layer',{}).get('name','整图')
+        self.identity.setText(f"{label} · {layer} · {data['source']} · {size[0]} × {size[1]} · 修订 {revision}\n分析编号 {data['analysis_id']}")
         stats=data['region'].get('statistics',{}).get('luma')
         line='详细数值按需计算，与当前图表使用同一份像素快照'
         if stats:
@@ -250,7 +292,7 @@ class ScopeWindow(QWidget):
         if diff:
             line+='\n参考差值：'+(f"亮度均值 {diff['statistics']['luma']['mean_percent']:+.2f} 个百分点" if 'statistics' in diff else diff['reason'])
         self.stats.setText(line)
-        self.note.setText('8 位预览 · '+('无 ICC，假定 sRGB；色彩未独立确认' if data['color']['confirmation'].startswith('assumed') else '已按嵌入 ICC 转换')+' → '+data['color']['analysis_space']+' · 近白比例不代表 RAW 高光不可恢复')
+        self.note.setText('8 位预览 · '+('无 ICC，假定 sRGB；色彩未独立确认' if data['color']['confirmation'].startswith('assumed') else '已按嵌入 ICC 转换')+' → '+data['color']['analysis_space']+' · 近白比例不代表 RAW 高光不可恢复'+(' · 按当前图层蒙版灰度加权，肤色线不是皮肤检测' if data.get('analysis_scope')=='active_layer' else ''))
         artifact=result.get('artifact')
         if artifact:
             key=(artifact['path'],artifact['sha256'])

@@ -48,20 +48,25 @@ def calculate(pixels,roi=None):
     iy=np.clip(np.rint(cr*(256/(255000*EXTENT)))+256,0,512).astype(np.int32)
     indices=iy*GRID+ix
     samples=indices.ravel() if valid.all() else indices[valid]
-    density=np.bincount(samples,minlength=GRID*GRID).reshape(GRID,GRID)
+    mask_weights=None if pixels.mask_weights is None else pixels.mask_weights[t:b,l:r][valid]
+    density=np.bincount(samples,weights=mask_weights,minlength=GRID*GRID).reshape(GRID,GRID)
     yy,xx=np.nonzero(density);counts=density[yy,xx]
     x=(xx-256)*EXTENT/256;y=(yy-256)*EXTENT/256
     radius=np.hypot(x,y);angles=np.degrees(np.arctan2(y,x))%360
-    total=int(counts.sum());chromatic=radius>.02;colored=int(counts[chromatic].sum())
+    total=float(counts.sum()) if mask_weights is not None else int(counts.sum());chromatic=radius>.02
+    colored=float(counts[chromatic].sum()) if mask_weights is not None else int(counts[chromatic].sum())
     reference=skin_reference(pixels.space)
     offsets=(angles-reference['angle_degrees']+180)%360-180
-    hue_bins=np.bincount((angles[chromatic]//10).astype(int),weights=counts[chromatic],minlength=36).astype(np.int64)
+    hue_bins=np.bincount((angles[chromatic]//10).astype(int),weights=counts[chromatic],minlength=36)
+    if mask_weights is None:hue_bins=hue_bins.astype(np.int64)
     dx=float(counts[chromatic]@x[chromatic]);dy=float(counts[chromatic]@y[chromatic])
     direction=math.degrees(math.atan2(dy,dx))%360 if math.hypot(dx,dy)>total*1e-6 else None
     summary={'projection':'OpenRV Web BT.601-style projection: Cb=-.169Rprime-.331Gprime+.5Bprime; Cr=.5Rprime-.419Gprime-.081Bprime',
         'working_space':pixels.space,'axis_bounds':[-EXTENT,EXTENT],'grid_size':[GRID,GRID],
         'quantization_step':EXTENT/256,'angle_convention':'degrees counterclockwise from +Cb; +Cr points up',
-        'population':total,'roi_pixels':[l,t,r,b],'neutral_radius_lte':.02,
+        'population':total,'sample_pixel_count':int(valid.sum()),
+        'population_units':'coverage-weighted pixels' if mask_weights is not None else 'pixels',
+        'roi_pixels':[l,t,r,b],'neutral_radius_lte':.02,
         'near_neutral_percent':float(counts[~chromatic].sum()/total*100),
         'mean_cb':float(counts@x/total),'mean_cr':float(counts@y/total),'mean_chroma_radius':float(counts@radius/total),
         'chromatic_pixel_count':colored,'hue_histogram_bin_degrees':10,'hue_histogram_counts':hue_bins.tolist(),

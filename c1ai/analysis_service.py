@@ -10,7 +10,7 @@ import uuid
 
 from .analysis_sources import NativeSource, FileSource
 from .contracts import digest
-from .image_analysis import POLICY, COLOR_SPACES, policy_for, decode, analyze, compare, scope_image, roi_bounds, region_metadata
+from .image_analysis import POLICY, COLOR_SPACES, policy_for, decode, analyze, compare, scope_image, roi_bounds, region_metadata, apply_mask
 
 
 def failure_details(error):
@@ -39,11 +39,14 @@ class AnalysisService:
         except OSError:pass  # Cache housekeeping must not block a valid analysis.
 
     def _source(self, request):
+        scope=request.get('analysis_scope','image')
+        if scope not in ('image','active_layer'):raise ValueError('Use analysis_scope image or active_layer')
         if request.get('source','native') == 'native':
             if request.get('path'):
                 raise ValueError('Native source does not accept a file path')
-            return NativeSource(self.backend)
+            return NativeSource(self.backend,scope)
         if request.get('source') == 'file' and isinstance(request.get('path'),str):
+            if scope!='image':raise ValueError('File source has no C1 layer mask')
             return FileSource(request['path'])
         raise ValueError('Use source native, or source file with path')
 
@@ -74,13 +77,16 @@ class AnalysisService:
                 raise ValueError('Saved analysis has a fixed color space; refresh for another space')
             if request.get('roi') is not None and roi != record['result']['region']['roi_normalized']:
                 raise ValueError('Saved analysis has a fixed ROI; refresh to analyze another region')
+            if request.get('analysis_scope') is not None and request['analysis_scope']!=record['request'].get('analysis_scope','image'):
+                raise ValueError('Saved analysis has a fixed scope; refresh to change it')
             if action=='reference':
+                if not record['result']['region']['pixel_count']:raise ValueError('Cannot pin an empty analysis as reference')
                 self.reference_id=analysis_id
             # A saved snapshot is never implicitly treated as current.
             source = self._source(record['request'])
         else:
             source = self._source(request)
-            slot = digest([source.name,str(getattr(source,'path','')),roi,space])
+            slot = digest([source.name,str(getattr(source,'path','')),roi,space,request.get('analysis_scope','image')])
             record = self.records.get(self.latest.get(slot))
         try:
             stamp = source.observe()
@@ -96,6 +102,7 @@ class AnalysisService:
         if not changed:
             # Window polling needs only a fresh stamp when it already has this exact artifact.
             if (request.get('known_analysis_id')==record['result']['analysis_id']
+                    and record['result']['region']['pixel_count']>0
                     and request.get('include_statistics') is False and not request.get('reference_id')
                     and request.get('include_image','none') in record['artifacts']):
                 return {'status':'ok','unchanged':True,'analysis_id':record['result']['analysis_id'],
@@ -106,6 +113,8 @@ class AnalysisService:
             data,meta=source.acquire(stamp)
             acquired=time.monotonic()
             pixels=decode(data,space,raw=meta.get('pixel_buffer'))
+            if '_mask_data' in meta:
+                pixels=apply_mask(pixels,meta.pop('_mask_data'),meta.pop('_mask_geometry'),meta['geometry'])
             decoded=time.monotonic()
             region=region_metadata(pixels,roi)
             analyzed=time.monotonic()
@@ -115,18 +124,23 @@ class AnalysisService:
                 return self._response(record,'stale' if record else 'waiting',request,
                                       current_target=after['target'],error='Selection or revision changed; late image discarded')
             analysis_id=uuid.uuid4().hex
-            result={**meta,**pixels.metadata,'analysis_id':analysis_id,'policy':policy_for(space),
+            policy=policy_for(space)
+            if pixels.mask_weights is not None:
+                policy={**policy,'mask_weighting':'native grayscale coverage / 255',
+                        'percentile_method':'weighted inverse CDF',
+                        'scope_renderer':'coverage-weighted positional density; shared histogram and chroma counts'}
+            result={**meta,**pixels.metadata,'analysis_id':analysis_id,'policy':policy,
                     'region':region,'statistics_state':'not_requested','elapsed_seconds':round(time.monotonic()-start,4),
                     'timing_seconds':{'acquire':round(acquired-start,4),'decode':round(decoded-acquired,4),
                                       'region':round(analyzed-decoded,4),'statistics':0.0}}
             new={'result':result,'pixels':pixels,'stamp':stamp['key'],
-                 'request':{**{k:v for k,v in request.items() if k in {'source','path'}},'roi':roi,'color_space':space},'artifacts':{}}
+                 'request':{**{k:v for k,v in request.items() if k in {'source','path','analysis_scope'}},'roi':roi,'color_space':space},'artifacts':{}}
             self.records[analysis_id]=new
             self.latest[slot]=analysis_id
             self._prune()
             return self._response(new,'ready',request,current_target=after['target'])
         except Exception as error:
-            return self._response(record,'stale' if record else 'failed',request,**failure_details(error))
+            return self._response(record,'stale' if record else 'failed',request,current_target=stamp['target'],**failure_details(error))
 
     def _ensure_statistics(self,record):
         if record['result']['statistics_state']=='ready':return False
@@ -153,23 +167,30 @@ class AnalysisService:
                   'reference_id':self.reference_id,**extra}
         if not record:
             return response
+        empty=record['result']['region']['pixel_count']==0
+        if empty:
+            response.update(status='empty' if state=='ready' else state,analysis=copy.deepcopy(record['result']),error='所选蒙版与 ROI 没有覆盖像素')
+            response['freshness']['state']='empty' if state=='ready' else state
+            if request.get('include_image')!='preview':return response
         # Window-only requests skip percentiles/zones. AI defaults remain complete.
         computed=False
         reference=request.get('reference_id')
-        if request.get('include_statistics') is not False or request.get('include_histograms') is True or reference:
+        if not empty and (request.get('include_statistics') is not False or request.get('include_histograms') is True or reference):
             computed=self._ensure_statistics(record)
-            if reference in self.records:
+            if reference in self.records and self.records[reference]['result']['region']['pixel_count']:
                 computed=self._ensure_statistics(self.records[reference]) or computed
-        want_vector=request.get('include_vectorscope') is True or request.get('include_image')=='vectorscope'
+        want_vector=not empty and (request.get('include_vectorscope') is True or request.get('include_image')=='vectorscope')
         if want_vector:
             computed=self._ensure_vector(record) or computed
-            if reference in self.records:computed=self._ensure_vector(self.records[reference]) or computed
+            if reference in self.records and self.records[reference]['result']['region']['pixel_count']:computed=self._ensure_vector(self.records[reference]) or computed
         result=copy.deepcopy(record['result'])
         response['analysis']=result
-        if reference:
+        if reference and not empty:
             try:
                 if reference not in self.records:
                     raise ValueError('Reference expired or belongs to another owner process')
+                if not self.records[reference]['result']['region']['pixel_count']:
+                    raise ValueError('Reference has no covered pixels')
                 response['difference']=compare(result,self.records[reference]['result'])
                 response['difference']['current_is_fresh']=state=='ready'
                 if want_vector:

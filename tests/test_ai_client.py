@@ -61,6 +61,11 @@ def test_readonly_and_copy_reuse_with_image_payload():
     run(agent.prepare(True, noop, stop))
     run(agent.prepare(True, noop, stop))
     assert sum(name == 'images' for name, _ in tools.calls) == 1
+    agent.dialogue = [{'role': 'user', 'content': 'previous provider'}]
+    agent.reset(clear_candidate=False)
+    assert agent.dialogue == []
+    run(agent.prepare(True, noop, stop))
+    assert sum(name == 'images' for name, _ in tools.calls) == 1
 
 
 def test_selection_guard_and_unsafe_routes():
@@ -152,7 +157,8 @@ def test_responses_loop_returns_images_and_effort_to_provider():
         async def definitions(self):
             return [SimpleNamespace(name=name, description='', inputSchema={'type': 'object'}) for name in ALLOWED]
     responses = Responses()
-    agent = PhotoAgent(TestTools())
+    local = TestTools()
+    agent = PhotoAgent(local)
     text = run(agent.run('看一下', client=SimpleNamespace(responses=responses), model='from-api',
         effort='from-server', edit=False, stopped=threading.Event(), emit=noop))
     assert text == '分析完成'
@@ -160,3 +166,52 @@ def test_responses_loop_returns_images_and_effort_to_provider():
     assert any(item['type'] == 'input_image' for item in responses.inputs[0]['input'][0]['content'])
     assert 'adjust' not in [tool['name'] for tool in responses.inputs[0]['tools']]
     assert responses.inputs[1]['input'][-1]['type'] == 'function_call_output'
+    # Initial observation, model-requested read, final guard: one read each, no duplicates.
+    assert sum(name == 'read' for name, _ in local.calls) == 3
+
+
+@pytest.mark.parametrize('failure', ['selection', 'preview', 'read_failed', 'incomplete'])
+def test_unverified_final_text_never_reaches_user(failure):
+    class Local(Tools):
+        fail_preview = False
+        fail_read = False
+        async def definitions(self):
+            return []
+        async def call(self, name, args):
+            if (name == 'preview' and self.fail_preview) or (name == 'read' and self.fail_read):
+                return result({'status': 'refused'})
+            return await super().call(name, args)
+    local = Local()
+    agent = PhotoAgent(local)
+    class Stream:
+        def __enter__(self): return self
+        def __exit__(self, *args): pass
+        def __iter__(self):
+            if failure == 'selection':
+                local.target['variant'] = {'id': 'other'}
+            if failure == 'preview':
+                agent.needs_review = True
+                local.fail_preview = True
+            if failure == 'read_failed':
+                local.fail_read = True
+            return iter([SimpleNamespace(type='response.output_text.delta', delta='已经修好了')])
+        def get_final_response(self):
+            return SimpleNamespace(status='incomplete' if failure == 'incomplete' else 'completed',
+                                   usage=None, output=[], output_text='已经修好了')
+    events = []
+    with pytest.raises(AgentStopped):
+        run(agent.run('修图', client=SimpleNamespace(responses=SimpleNamespace(stream=lambda **kw: Stream())),
+            model='model', edit=False, stopped=threading.Event(), emit=lambda *value: events.append(value)))
+    assert not any(kind == 'delta' for kind, _ in events)
+
+
+def test_invalid_saved_settings_and_endpoint_fail_cleanly(tmp_path):
+    path = tmp_path/'settings.json'
+    for value in ({'base_url': None}, {'model': []}, {'effort': {}}, {'encrypted_credentials': 5}):
+        path.write_text(json.dumps(value), 'utf-8')
+        with pytest.raises(ValueError):
+            load_settings(path)
+    for url in ('https://api.example.com:bad/v1', 'https://api.example.com:99999/v1',
+                'https://api.example.com /v1', None):
+        with pytest.raises(ValueError):
+            normalize_url(url)

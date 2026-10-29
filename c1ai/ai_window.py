@@ -93,6 +93,16 @@ class SettingsDialog(QDialog):
         self.load_models.clicked.connect(lambda: self.discover('models'))
         self.load_efforts.clicked.connect(lambda: self.discover('efforts'))
         self.model.currentTextChanged.connect(self.model_changed)
+        self.key.textEdited.connect(self.credentials_changed)
+
+    def credentials_changed(self):
+        # Capabilities are account-specific even when the endpoint/model ID is unchanged.
+        self.models.clear()
+        self.model.clear()
+        self.model.setCurrentText('')
+        self.effort.clear()
+        self.effort.setCurrentText('')
+        self.discovery_status.setText('密钥已变化，请重新读取此账号的模型和思考等级。')
 
     def model_changed(self):
         self.effort.clear()
@@ -105,7 +115,9 @@ class SettingsDialog(QDialog):
             self.original_url = self.url.text()
             self.models.clear()
             self.model.clear()
+            self.model.setCurrentText('')
             self.effort.clear()
+            self.effort.setCurrentText('')
 
     def discover(self, mode):
         if self.discovery:
@@ -189,9 +201,11 @@ class Worker(QThread):
         try:
             with create_client(self.settings['base_url'], self.settings['key']) as client:
                 if self.test:
+                    self.agent.check_stop(self.stopped)
                     options = {'reasoning': {'effort': self.settings['effort']}} if self.settings.get('effort') else {}
                     response = client.responses.create(model=self.settings['model'], input='Reply OK.',
                                                        max_output_tokens=128, store=False, **options)
+                    self.agent.check_stop(self.stopped)
                     self.event.emit('status', 'API 已连接；图片与工具能力将在实际任务中验证。'
                                     if response.status == 'completed' else 'API 已响应，但测试输出未完成。')
                 else:
@@ -274,9 +288,12 @@ class AIWindow(QMainWindow):
         dialog = SettingsDialog(self.settings, self)
         if dialog.exec():
             # New providers/models start without prior conversation content.
+            connection_changed = any(self.settings.get(key) != dialog.value.get(key)
+                                     for key in ('base_url', 'key', 'model'))
             self.settings = dialog.value
-            self.agent.reset()
-            self.chat.clear()
+            if connection_changed:
+                self.agent.reset(clear_candidate=False)
+                self.chat.clear()
             self.status.setText('配置已保存。测试连接会消耗少量 API 额度。')
 
     def open_request(self, request):
@@ -313,6 +330,11 @@ class AIWindow(QMainWindow):
             self.status.setText('请先输入修图要求或想分析的问题。')
             return
         if not test:
+            self.picture = QPixmap()
+            self.preview.clear()
+            self.preview.setText('正在读取当前照片…')
+            self.target.setText('正在核对 C1 当前选图')
+            self.usage.clear()
             self.append('\n你：' + prompt + '\n\nAI：')
             self.prompt.clear()
         self.worker = Worker(self.agent, self.settings, prompt, edit, test, self)

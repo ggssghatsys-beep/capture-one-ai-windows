@@ -106,10 +106,13 @@ class PhotoAgent:
         self.allow_edit = False
         self.needs_review = False
 
-    def reset(self):
+    def reset(self, *, clear_candidate=True):
         self.dialogue.clear()
-        self.candidate = None
-        self.last_identity = None
+        if clear_candidate:
+            self.candidate = None
+            self.last_identity = None
+        self.bound = None
+        self.allow_edit = False
         self.needs_review = False
 
     async def prepare(self, edit: bool, emit, stopped):
@@ -194,7 +197,7 @@ class PhotoAgent:
             raise AgentStopped('请求涉及另一张照片或变体，已停止。')
         # Guard the selection before requests without their own target, including context/get.
         # Explicit targets continue through the existing native atomic identity checks.
-        if not args.get('target') or name in ('context', 'operations'):
+        if (not args.get('target') and name != 'read') or name in ('context', 'operations'):
             current = result_data(await self.tools.call('read', {'fields': []}))
             if current.get('status') != 'ok' or identity(current['target']) != self.bound:
                 raise AgentStopped('C1 已切换照片、变体或实例，已停止本轮。请重新发送需求。')
@@ -225,7 +228,9 @@ class PhotoAgent:
         returned = (data.get('target') or data.get('after', {}).get('target')
                     or data.get('analysis', {}).get('target'))
         if returned and identity(returned) != self.bound:
-            raise AgentStopped('返回图像/参数的身份已改变，未继续执行。')
+            raise AgentStopped('C1 已切换照片、变体或实例，返回身份已改变，未继续执行。')
+        if name == 'read' and (data.get('status') != 'ok' or not returned):
+            raise AgentStopped('未能核对当前照片，已停止本轮。')
         self.deliver_images(result, emit)
         return result
 
@@ -245,19 +250,15 @@ class PhotoAgent:
         for _ in range(max_rounds):
             self.check_stop(stopped)
             emit('status', 'AI 正在分析照片…')
-            streamed_text = False
             # No automatic retry: a provider/network failure ends this run visibly.
             with client.responses.stream(model=model, instructions=INSTRUCTIONS, input=messages,
                     tools=tool_specs, parallel_tool_calls=False, max_output_tokens=4096,
                     store=False, include=['reasoning.encrypted_content'], **options) as stream:
                 for event in stream:
                     self.check_stop(stopped)
-                    if event.type == 'response.output_text.delta':
-                        streamed_text = True
-                        emit('delta', event.delta)
+                    # Keep streaming for cancellation, but do not display an unchecked final
+                    # conclusion before the complete response and current target are verified.
                 response = stream.get_final_response()
-            if not streamed_text and response.output_text:
-                emit('delta', response.output_text)
             usage['requests'] += 1
             if response.usage:
                 usage['input_tokens'] += response.usage.input_tokens
@@ -270,10 +271,9 @@ class PhotoAgent:
             calls = [item for item in response.output if item.type == 'function_call']
             if not calls:
                 # A user can switch photos while the model is composing its final answer.
-                await self.execute('read', {'fields': []}, emit, stopped)
+                fresh = result_data(await self.execute('read', {'fields': []}, emit, stopped))
                 if self.needs_review:
                     # Do not accept an aesthetic conclusion without feeding back the changed frame.
-                    fresh = result_data(await self.execute('read', {'fields': []}, emit, stopped))
                     result = await self.execute('preview', {'target': fresh['target'],
                         'observation_token': fresh['observation_token'], 'kind': 'native', 'max_size': 1200}, emit, stopped)
                     if self.needs_review:
@@ -282,6 +282,7 @@ class PhotoAgent:
                         'text': '这是执行后的原生预览。请实际检查后再给最终说明，不必继续修改。'}] + api_content(result)})
                     continue
                 answer = response.output_text or '模型未返回文字说明。'
+                emit('delta', answer)
                 self.dialogue.extend([{'role': 'user', 'content': prompt[:12000]},
                                       {'role': 'assistant', 'content': answer[:12000]}])
                 self.dialogue = self.dialogue[-8:]
@@ -289,6 +290,8 @@ class PhotoAgent:
                 return answer
             if len(calls) > 8:
                 raise AgentStopped('单次工具调用数量超限，已停止。')
+            if response.output_text:
+                emit('delta', response.output_text)
             for item in calls:
                 try:
                     args = json.loads(item.arguments)
@@ -298,7 +301,7 @@ class PhotoAgent:
                     result = await self.execute(item.name, args, emit, stopped)
                 messages.append({'type': 'function_call_output', 'call_id': item.call_id,
                                  'output': api_content(result)})
-        raise AgentStopped('已达到本轮 24 次模型请求上限。副本保留，可查看后继续。')
+        raise AgentStopped(f'已达到本轮 {max_rounds} 次模型请求上限。副本保留，可查看后继续。')
 
 
 def create_client(base_url, key):

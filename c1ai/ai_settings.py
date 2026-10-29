@@ -13,7 +13,11 @@ DEFAULT_URL = 'https://api.openai.com/v1'
 
 
 def normalize_url(value: str) -> str:
+    if not isinstance(value, str) or any(c.isspace() for c in value.strip()):
+        raise ValueError('API 地址格式无效。')
     parsed = urlsplit(value.strip().rstrip('/'))
+    # Accessing .port validates malformed and out-of-range ports before any network call.
+    _ = parsed.port
     if (not parsed.hostname or parsed.username or parsed.password or parsed.query or parsed.fragment
             or parsed.scheme not in ('https', 'http')):
         raise ValueError('API 地址必须是完整的 HTTPS 地址，不能带用户名、查询参数或密钥。')
@@ -60,15 +64,21 @@ def load_settings(path: Path | None = None) -> dict:
     value = json.loads(path.read_text('utf-8'))
     if not isinstance(value, dict):
         raise ValueError('API 配置格式无效。')
+    for field in ('base_url', 'model', 'effort', 'encrypted_credentials'):
+        if field in value and not isinstance(value[field], str):
+            raise ValueError('API 配置字段格式无效，请重新设置。')
     endpoint = normalize_url(value.get('base_url', DEFAULT_URL))
     key, warning = '', ''
     if value.get('encrypted_credentials'):
         try:
             secret = json.loads(_crypt(base64.b64decode(value['encrypted_credentials']), True))
-            if secret['base_url'] != endpoint:
+            if not isinstance(secret, dict) or secret.get('base_url') != endpoint:
                 raise ValueError('API 地址已变化，请重新输入密钥。')
             key = secret['key']
+            if not isinstance(key, str):
+                raise ValueError('保存的密钥格式无效。')
         except (OSError, ValueError, KeyError):
+            key = ''
             warning = '保存的密钥无法解密或地址已变化，请重新输入。'
     return {'base_url': endpoint, 'model': value.get('model', ''), 'effort': value.get('effort', ''), 'key': key,
             'remember': bool(key), 'warning': warning}

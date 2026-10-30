@@ -1,8 +1,10 @@
+> 0.4.0a1 源码包包含 Mac 实验实现；本页仍是 Windows 步骤。Mac 请使用 [INSTALL_MAC](INSTALL_MAC.md)。安装 AI 应先询问是否创建波形桌面入口；Windows 安装窗口但不建波形图标可加 `-NoScopesShortcut`，原有默认行为保持兼容。
+
 # 安装、启动与排错
 
 ## 环境与安装
 
-使用 64 位 Windows、Capture One 16.8.6.3784 和一个 Session。需要 Python 3.11+（实测 3.14.7）、PowerShell 7.6+（实测 7.6.5）、.NET 10 Windows Desktop Runtime。脚本在 pwsh 中执行，不适用于 Windows PowerShell 5.1。Release ZIP 带本项目当前两份桥接 DLL；从 Git 下载源码时，同一启动脚本可在本机编译。
+使用 64 位 Windows、Capture One 16.8.6.3784 和一个 Session。需要 Python 3.11+（实测 3.14.7）、PowerShell 7.6+（实测 7.6.5）、.NET 10 Windows Desktop Runtime。脚本在 pwsh 中执行，不适用于 Windows PowerShell 5.1。旧 Windows Release ZIP 带本项目桥接 DLL；0.4.0a1 双平台源码包及 Git 源码不包含本机编译产物，同一启动脚本可使用 PowerShell 所带编译器在本机编译。
 
 解压到固定目录，不要在压缩包中运行。安装通过 pip 联网取得依赖，Python、PowerShell、.NET 和 Capture One 不随包分发；C1 须独立安装并有效授权。移动目录后重新安装以更新 MCP 路径。
 

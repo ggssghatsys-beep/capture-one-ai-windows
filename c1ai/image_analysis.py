@@ -30,6 +30,7 @@ COLOR_SPACES = {
     'adobe_rgb': {'name':'Adobe RGB (1998)','weights':[.2973449752505362,.6273635662554661,.0752914584939979],'transfer':'gamma 563/256'},
     'display_p3': {'name':'Display P3','weights':[.2289745640697488,.6917385218365064,.079286914093745],'transfer':'sRGB'},
 }
+PRECISION_EDGES = {'display':640,'exact':1600}
 
 
 def profile_bytes(space):
@@ -37,9 +38,12 @@ def profile_bytes(space):
     return _SRGB_ICC if space=='srgb' else (Path(__file__).parent/'profiles'/(space+'.icc')).read_bytes()
 
 
-def policy_for(space):
+def policy_for(space, precision='exact'):
     spec=COLOR_SPACES[space]
-    return {**POLICY,'analysis_color_space':space,'luma_weights':spec['weights'],
+    return {**POLICY,'precision':precision,'max_edge':PRECISION_EDGES[precision],
+            **({'scope_renderer':'NumPy positional density, 256 signal bins; logarithmic display intensity; shared histogram counts'}
+               if precision=='display' else {}),
+            'analysis_color_space':space,'luma_weights':spec['weights'],
             'signal':f"{spec['name']} encoded RGB weighted Yprime approximation",
             'linear_luminance':f"inverse {spec['transfer']} then RGB-to-XYZ Y weights"}
 
@@ -72,17 +76,24 @@ class Pixels:
         return output.getvalue()
 
 
-def decode(data: bytes, color_space='srgb', raw=None) -> Pixels:
+def _bgra(data,raw):
+    w,h=raw.get('width'),raw.get('height')
+    if (type(w) is not int or type(h) is not int or not 1<=w<=1600 or not 1<=h<=1600
+            or raw.get('format')!='BGRA8' or raw.get('bit_depth')!=8 or raw.get('row_order')!='top-down'
+            or raw.get('stride')!=w*4 or len(data)!=w*h*4):
+        raise ValueError('Invalid native BGRA pixel buffer')
+    return np.frombuffer(data,dtype=np.uint8).reshape(h,w,4)
+
+
+def decode(data: bytes, color_space='srgb', raw=None, precision='exact') -> Pixels:
     """One canonical sRGB buffer for numerical analysis, scopes and displayed preview."""
     destination=profile_bytes(color_space)
+    max_edge=PRECISION_EDGES[precision]
     if len(data) > 64*1024*1024:
         raise ValueError('Image exceeds 64 MiB')
     if raw is not None:
+        _bgra(data,raw)  # Validate once before creating a PIL view; no PNG codec round trip.
         w,h=raw.get('width'),raw.get('height')
-        if (type(w) is not int or type(h) is not int or not 1<=w<=1600 or not 1<=h<=1600
-                or raw.get('format')!='BGRA8' or raw.get('bit_depth')!=8 or raw.get('row_order')!='top-down'
-                or raw.get('stride')!=w*4 or len(data)!=w*h*4):
-            raise ValueError('Invalid native BGRA pixel buffer')
         opened=Image.frombytes('RGBA',(w,h),data,'raw','BGRA')
     else:opened=Image.open(io.BytesIO(data))
     with opened as original:
@@ -114,14 +125,14 @@ def decode(data: bytes, color_space='srgb', raw=None) -> Pixels:
             source = im.convert('L') if profile.profile.xcolor_space.strip() == 'GRAY' else rgb
             rgb = ImageCms.profileToProfile(source, profile, ImageCms.ImageCmsProfile(io.BytesIO(destination)),
                                             renderingIntent=1, outputMode='RGB')
-        rgb.thumbnail((POLICY['max_edge'], POLICY['max_edge']), Image.Resampling.LANCZOS)
+        rgb.thumbnail((max_edge,max_edge), Image.Resampling.LANCZOS)
         alpha = alpha.resize(rgb.size, Image.Resampling.NEAREST)
         array = np.array(rgb, dtype=np.uint8)
         valid = np.asarray(alpha) == 255
         if not valid.any():
             raise ValueError('No opaque pixels to analyze')
         pixel_hash = hashlib.sha256(str(rgb.size).encode()+array.tobytes()+valid.tobytes()).hexdigest()
-        meta = {'source_format': fmt, 'source_size': size, 'source_mode': mode, 'source_bit_depth': 8,
+        meta = {'precision':precision,'source_format': fmt, 'source_size': size, 'source_mode': mode, 'source_bit_depth': 8,
                 'analysis_size': list(rgb.size), 'analysis_bit_depth': 8, 'color': color,
                 'content_sha256': hashlib.sha256(data).hexdigest(), 'pixel_sha256': pixel_hash,
                 'excluded_nonopaque_pixels': int(valid.size-valid.sum()),
@@ -141,18 +152,27 @@ def roi_bounds(roi, width, height):
     return [math.floor(l*width), math.floor(t*height), math.ceil(r*width), math.ceil(b*height)]
 
 
-def apply_mask(pixels, data, geometry, expected_geometry):
+def apply_mask(pixels, data, geometry, expected_geometry, raw=None):
     """Native gray mask is coverage, never a color-managed photograph."""
     if geometry != expected_geometry:
         raise ValueError('Native mask and photo geometry differ; cannot align safely')
-    with Image.open(io.BytesIO(data)) as im:
-        im.load()
-        if im.size != tuple(pixels.metadata['analysis_size']):
+    if raw is not None:rgba=_bgra(data,raw)
+    else:
+        with Image.open(io.BytesIO(data)) as im:
+            im.load()
+            rgba=np.asarray(im.convert('RGBA'))
+    # Validate the source before resizing: a tiny colored/transparent pixel can
+    # disappear when rounded into the coarse display grid.
+    if not (np.array_equal(rgba[:,:,0],rgba[:,:,1]) and np.array_equal(rgba[:,:,1],rgba[:,:,2]) and (rgba[:,:,3]==255).all()):
+        raise ValueError('Native mask must be opaque grayscale coverage')
+    coverage=rgba[:,:,0].copy()
+    if list(rgba.shape[1::-1]) != pixels.metadata['analysis_size']:
+        if pixels.metadata.get('precision') != 'display':
             raise ValueError('Native mask and photo sizes differ')
-        rgba=np.asarray(im.convert('RGBA'))
-        if not (np.array_equal(rgba[:,:,0],rgba[:,:,1]) and np.array_equal(rgba[:,:,1],rgba[:,:,2]) and (rgba[:,:,3]==255).all()):
-            raise ValueError('Native mask must be opaque grayscale coverage')
-        coverage=rgba[:,:,0].copy()
+        # The Viewer cache and mask renderer may round the same full-crop
+        # geometry differently. Only the explicitly coarse display sample
+        # aligns coverage to its RGB grid; exact analysis retains strict size.
+        coverage=np.asarray(Image.fromarray(coverage).resize(pixels.metadata['analysis_size'],Image.Resampling.BILINEAR))
     weights=coverage.astype(np.float64)/255
     weights[~pixels.valid]=0
     valid=weights>0
@@ -197,8 +217,13 @@ def analyze(pixels: Pixels, roi=None):
                 order=np.argsort(values);sorted_values=values[order];cumulative=np.cumsum(sample_weights[order])
             indices=np.minimum(np.searchsorted(cumulative,total*quantiles/100),len(sorted_values)-1)
             percentiles=sorted_values[indices]
-            mean=float(values@sample_weights/total)
-            near_black=sample_weights[values<=.01].sum()/total;near_white=sample_weights[values>=.99].sum()/total
+            if byte_channel:
+                # The coverage-weighted histogram is already exact for U8 RGB.
+                mean=float(counts@_U8/total)
+                near_black=counts[:3].sum()/total;near_white=counts[253:].sum()/total
+            else:
+                mean=float(values@sample_weights/total)
+                near_black=sample_weights[values<=.01].sum()/total;near_white=sample_weights[values>=.99].sum()/total
             return {'mean_percent':mean*100,'percentiles_percent':{f'P{q}':float(v*100) for q,v in zip(quantiles,percentiles)},
                     'near_black_percent':float(near_black*100),'near_white_percent':float(near_white*100)},counts
         if byte_channel:
@@ -254,6 +279,19 @@ def compare(current: dict, reference: dict):
     for key in ('photo_key', 'source', 'policy', 'analysis_size', 'color', 'crop_signature'):
         if current[key] != reference[key]:
             raise ValueError('Reference is not comparable: '+key+' changed')
+    def basis(result):
+        saved=result.get('render_basis')
+        if saved is None:
+            # Earlier exact snapshots used the native job without this field.
+            source=result.get('sample_source') or 'native_job'
+            saved=result.get('viewer_stamp') or {}
+        else:source=saved.get('sample_source')
+        if source!='viewer_cache':return {'sample_source':source}
+        if any(not isinstance(saved.get(k),str) for k in ('proof_profile','display_profile')):
+            raise ValueError('Reference render_basis lacks Viewer profile evidence')
+        return {'sample_source':source,**{k:saved[k] for k in ('proof_profile','display_profile')}}
+    if basis(current)!=basis(reference):
+        raise ValueError('Reference is not comparable: render_basis changed')
     if current.get('sample_mask_sha256')!=reference.get('sample_mask_sha256') or current.get('analysis_scope')!=reference.get('analysis_scope'):
         raise ValueError('Reference mask or analysis scope changed')
     a, b = current['region'], reference['region']
@@ -273,7 +311,7 @@ def histogram_height(counts, peak):
 
 
 def scope_image(pixels: Pixels, roi=None, mode='waveform', vector=None, histograms=None) -> Image.Image:
-    """FFmpeg waveform/parade; histogram lines plot the shared numerical definition."""
+    """Fast display density or exact FFmpeg plots; histograms share numerical counts."""
     if mode=='vectorscope':
         from .vectorscope import calculate,render
         return render(vector if vector is not None else calculate(pixels,roi))
@@ -305,13 +343,17 @@ def scope_image(pixels: Pixels, roi=None, mode='waveform', vector=None, histogra
     font=ImageFont.load_default(size=22)
     colors = {'red': (255,85,90), 'green': (93,235,151), 'blue': (91,151,255), 'luma': (225,231,240)}
     if mode in ('waveform','parade'):
-        if pixels.mask_weights is not None:
-            coverage=pixels.mask_weights[t:b,l:r];columns=np.broadcast_to(np.arange(r-l),coverage.shape)
+        if pixels.mask_weights is not None or pixels.metadata.get('precision')=='display':
+            # Keep every image column and 256 vertical bins. This display path also
+            # avoids PyAV's first import; exact unmasked output retains its filter.
+            coverage=None if pixels.mask_weights is None else pixels.mask_weights[t:b,l:r].ravel()
+            columns=np.arange(r-l)
             panels=[]
             for i,signal in enumerate([luma] if mode=='waveform' else [rgb[:,:,i] for i in range(3)]):
                 density=np.bincount(((255-signal.astype(np.int32))*(r-l)+columns).ravel(),
-                    weights=coverage.ravel(),minlength=256*(r-l)).reshape(256,r-l)
-                intensity=255*np.log1p(density)/max(1,float(np.log1p(density).max()))
+                    weights=coverage,minlength=256*(r-l)).reshape(256,r-l)
+                level=np.log1p(density)
+                intensity=255*level/max(1,float(level.max()))
                 color=np.ones(3) if mode=='waveform' else np.eye(3)[i]
                 panels.append((intensity[:,:,None]*color).astype(np.uint8))
             panel=Image.fromarray(np.concatenate(panels,axis=1))

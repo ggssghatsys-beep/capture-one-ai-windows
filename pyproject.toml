@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "capture-one-ai-rebuild"
-version = "0.3.0a3"
-description = "Windows Capture One local owner, verified editing core, and CLI/MCP clients"
+version = "0.4.0a1"
+description = "Native Capture One local owner for Windows and experimental macOS, with CLI/MCP clients and scopes"
 readme = "README.md"
 license = "MIT"
 license-files = ["LICENSE", "third_party/*.txt"]
@@ -18,8 +18,9 @@ Issues = "https://github.com/ggssghatsys-beep/capture-one-ai-windows/issues"
 
 [project.optional-dependencies]
 test = ["pytest>=8"]
+mac = ["frida==17.24.3; sys_platform == 'darwin'"]
 scopes = ["PySide6-Essentials>=6.8,<7", "av>=17.1,<18"]
-ai = ["openai>=2.30,<4", "PySide6-Essentials>=6.8,<7"]
+ai = ["openai>=2.30,<4", "PySide6-Essentials>=6.8,<7", "keyring>=25.6,<26; sys_platform == 'darwin'"]
 
 [project.scripts]
 c1ai = "c1ai.__main__:main"
@@ -32,7 +33,7 @@ packages = ["c1ai"]
 include-package-data = true
 
 [tool.setuptools.package-data]
-c1ai = ["*.ps1", "native/*.ps1", "data/*.json", "profiles/*.icc"]
+c1ai = ["*.ps1", "native/*.ps1", "native/*.js", "data/*.json", "profiles/*.icc"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

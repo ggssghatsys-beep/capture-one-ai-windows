@@ -123,17 +123,17 @@ def test_cli_compact_uses_same_formatter_and_keeps_error(monkeypatch, capsys):
     assert actual == compact_response(original, command="read")
 
 
-def test_mcp_get_keeps_full_logs_and_recover_is_public(monkeypatch):
+def test_mcp_get_keeps_full_logs_and_reconcile_is_public(monkeypatch):
     import asyncio
     from c1ai import mcp_server
 
     record = {"status": "completed", "operation_id": "one", "before": observation(), "after": observation()}
     monkeypatch.setattr(mcp_server, "call", lambda request: deepcopy(record))
     assert mcp_server.operations("get", operation_id="one") == record
-    compact = mcp_server.operations("recover", operation_id="one")
+    compact = mcp_server.operations("reconcile", operation_id="one")
     assert compact["operation_id"] == "one" and "before" not in compact
     tools = {tool.name: tool for tool in asyncio.run(mcp_server.mcp.list_tools())}
-    assert "recover" in tools["operations"].inputSchema["properties"]["action"]["enum"]
+    assert "reconcile" in tools["operations"].inputSchema["properties"]["action"]["enum"]
 
 
 def test_successful_numeric_focus_side_effect_survives_compact_response():

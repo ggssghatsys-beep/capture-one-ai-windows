@@ -5,6 +5,7 @@ import json
 import os
 from pathlib import Path
 import sqlite3
+import sys
 import time
 import uuid
 
@@ -14,6 +15,9 @@ PENDING = {"dispatching", "partial", "outcome_unknown"}
 
 
 def default_state_dir():
+    if sys.platform == "darwin":
+        from .macos_ipc import state_directory
+        return state_directory()
     base = Path(os.environ.get("LOCALAPPDATA", Path.home() / "AppData" / "Local"))
     return base / "CaptureOneAI"
 
@@ -21,7 +25,11 @@ def default_state_dir():
 def scope(target):
     def path(part):
         value = (target or {}).get(part, {}).get("path")
-        return str(value).replace("/", "\\").casefold() if value else None
+        if not value:
+            return None
+        if (target or {}).get("platform") == "macos" or (target or {}).get("instance", {}).get("platform") == "macos":
+            return str(value)
+        return str(value).replace("/", "\\").casefold()
     return path("document"), path("image")
 
 
@@ -62,11 +70,42 @@ class Journal:
         """)
         self.db.commit()
 
-    def observe(self, observation):
+    @staticmethod
+    def _observation_identity(observation):
         identity = {"target": observation["target"], "values": observation["values"]}
         if observation.get("module"):
             identity["module"] = observation["module"]
-        token = digest(identity)
+        if (observation.get("module") in {"layers", "masks", "color_mixer"}
+                and observation["target"].get("instance", {}).get("platform") == "macos"):
+            context = observation.get("native_context", {})
+            identity["mac_bridge"] = {key: context.get(key) for key in
+                ("bridge_target", "bridge_mask_actions", "bridge_layer_actions", "bridge_color_actions")}
+        if (observation.get("module") == "color_mixer"
+                and observation["target"].get("instance", {}).get("platform") == "macos"):
+            # Skin Tone is absent from the public Basic/Advanced values. Bind
+            # its complete saved value so a new read cannot overwrite an older
+            # source token while retaining the same visible adjustment values.
+            context = observation.get("native_context", {})
+            saved = context.get("color_editor_snapshot", {})
+            identity["mac_color_editor"] = {
+                "saved": {key: saved.get(key) for key in ("source", "sha256", "available")},
+                "layer_state": context.get("layer_state"),
+                "native": context.get("native_color_snapshot"),
+                "guard": context.get("color_native_guard"),
+                "apple_event_state": context.get("apple_event_color_state"),
+            }
+        if (observation.get("module") == "masks"
+                and observation["target"].get("instance", {}).get("platform") == "macos"):
+            identity["mac_mask_parameters"] = observation.get("native_context", {}).get("mask_ax_parameters")
+            identity["mac_gradient_view"] = observation.get("gradient_view")
+            identity["mac_gradient_selection_point"] = observation.get("native_context", {}).get("gradient_selection_point")
+        if (observation.get("module") == "layers"
+                and observation["target"].get("instance", {}).get("platform") == "macos"):
+            identity["mac_layer_parameters"] = observation.get("native_context", {}).get("duplicate_snapshot")
+        return identity
+
+    def observe(self, observation):
+        token = digest(self._observation_identity(observation))
         with self.db:
             self.db.execute("INSERT OR REPLACE INTO observations VALUES (?, ?)", (token, canonical(observation)))
         return token
@@ -75,7 +114,17 @@ class Journal:
         row = self.db.execute("SELECT payload FROM observations WHERE token=?", (token,)).fetchone()
         if row is None:
             raise Refused("unknown_observation", "Read current values before requesting an edit")
-        return json.loads(row[0])
+        result = json.loads(row[0])
+        identity = self._observation_identity(result)
+        if "mac_color_editor" in identity and token != digest(identity):
+            # Older Mac tokens omitted Skin Tone and could already have been
+            # overwritten by another read. They cannot safely name a source.
+            raise Refused("legacy_color_editor_observation", "Read Color Editor again; this older token did not bind its complete saved value")
+        if "mac_mask_parameters" in identity and (identity["mac_mask_parameters"] is None or token != digest(identity)):
+            raise Refused("legacy_mask_observation", "Read masks again; this older token did not bind the complete saved parameters")
+        if "mac_layer_parameters" in identity and (identity["mac_layer_parameters"] is None or token != digest(identity)):
+            raise Refused("legacy_layer_observation", "Read layers again; this older token did not bind complete layer and mask contents")
+        return result
 
     def get(self, operation_id=None, request_id=None):
         return self._get(self.db, operation_id, request_id)
@@ -129,24 +178,54 @@ class Journal:
             if existing:
                 self.db.commit()
                 return existing, False
-            native=(before.get('evidence',{}).get('source')=='c1_internal_model'
+            mac_native=before.get('evidence',{}).get('source') == 'c1_applescript'
+            native=(before.get('evidence',{}).get('source') in {'c1_internal_model', 'c1_applescript'}
                     and before.get('evidence',{}).get('model_verified') is True)
-            structural=(request.get('command')=='adjust' and request.get('module') in {'layers','masks'}
-                        and request.get('patch',{}).get('action')!='set_opacity')
-            pending=self.pending(target) if affects_image({'request':request}) else []
+            def is_structural(req):
+                # Returning to an observed Mac layer is needed for read-only
+                # inspection of uncertain writes; selection changes no content.
+                if (mac_native and req.get('command') == 'adjust'
+                        and (req.get('module'), req.get('patch', {}).get('action'))
+                        in {('layers', 'select'), ('masks', 'select_submask')}):
+                    return False
+                return req.get('command') == 'adjust' and (
+                    req.get('module') in {'layers','masks'} and req.get('patch',{}).get('action') != 'set_opacity'
+                    or mac_native and req.get('module') == 'color_mixer'
+                    and (req.get('patch',{}).get('mode') == 'advanced'
+                         and req.get('patch',{}).get('action') in {'add','remove'}
+                         or req.get('patch',{}).get('action') in {'reset','paste'}))
+            structural=is_structural(request)
+            selection = mac_native and (
+                request.get('command') == 'images' and request.get('action') in {'select', 'next', 'previous'}
+                or request.get('command') == 'adjust'
+                and (request.get('module'), request.get('patch', {}).get('action'))
+                in {('layers', 'select'), ('masks', 'select_submask')})
+            pending=self.pending(target) if selection or affects_image({'request':request}) else []
+            if selection:
+                # An unfinished native mask/AI action may still attach its
+                # result to the active layer. Selecting elsewhere is unsafe
+                # until that operation is reconciled, even though selection
+                # itself changes no saved content.
+                for item in pending:
+                    req = item.get('request', {})
+                    if (item.get('target', {}).get('instance') == target.get('instance')
+                            and req.get('command') == 'adjust'
+                            and req.get('module') == 'masks'
+                            and req.get('patch', {}).get('action') in {'create_subject', 'create_background', 'combine_ai'}):
+                        raise Refused('pending_operation', 'Resolve the unfinished mask action before changing the selected photo, layer or submask')
+                if request.get('command') == 'images':
+                    pending = []  # Ordinary unresolved edits do not block navigation.
             if native and request.get('command')=='adjust':
                 pending=[r for r in pending if structural and r.get('target',{}).get('instance')==target.get('instance')
                     and r.get('target',{}).get('variant',{}).get('id')==target.get('variant',{}).get('id')
-                    and r.get('request',{}).get('module') in {'layers','masks'}
-                    and r.get('request',{}).get('patch',{}).get('action')!='set_opacity']
+                    and is_structural(r.get('request',{}))]
             elif native and request.get('command')=='images' and request.get('action') in {'clone','create_candidate'}:
                 pending=[r for r in pending if r.get('target',{}).get('instance')==target.get('instance')
                     and r.get('target',{}).get('image')==target.get('image')
                     and ((r.get('request',{}).get('command')=='images'
                           and r.get('request',{}).get('action') in {'clone','create_candidate'})
                          or (r.get('target',{}).get('variant',{}).get('id')==target.get('variant',{}).get('id')
-                             and r.get('request',{}).get('module') in {'layers','masks'}
-                             and r.get('request',{}).get('patch',{}).get('action')!='set_opacity'))]
+                             and is_structural(r.get('request',{}))))]
             if pending:raise Refused('pending_operation','Resolve the unfinished structural action on this photo before creating another candidate or layer')
             record = {"operation_id": uuid.uuid4().hex, "request_id": request["request_id"],
                       "request_hash": digest(request), "request": request, "target": target,

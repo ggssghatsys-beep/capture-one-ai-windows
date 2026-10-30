@@ -8,11 +8,11 @@ import sys
 import time
 from .scopes_launch import VIEWS
 
-from PySide6.QtCore import Qt, QThread, Signal, QTimer, QSettings, QLockFile, QStandardPaths
+from PySide6.QtCore import Qt, QThread, Signal, QTimer, QSettings, QLockFile, QStandardPaths, QEvent
 from PySide6.QtNetwork import QLocalServer, QLocalSocket
-from PySide6.QtGui import QPixmap
+from PySide6.QtGui import QPixmap, QIcon, QPainter, QPen, QColor
 from PySide6.QtWidgets import (QApplication,QWidget,QVBoxLayout,QHBoxLayout,QLabel,QPushButton,
-                               QComboBox,QFileDialog,QDoubleSpinBox,QDialog,QMenu,QToolButton,QSizePolicy,QStyle)
+                               QComboBox,QFileDialog,QDoubleSpinBox,QDialog,QMenu,QToolButton,QSizePolicy,QStyle,QSystemTrayIcon)
 
 
 def refresh_delay_ms(result):
@@ -29,7 +29,7 @@ def refresh_delay_ms(result):
     if superseded or state in ('waiting','stale') and not error:return 50
     if 'main form not ready' in error:return 200
     if state=='failed' or error:return 1500
-    return 100
+    return 50
 
 
 class Worker(QThread):
@@ -57,13 +57,15 @@ class ScopeWindow(QWidget):
         super().__init__()
         self.settings=settings if settings is not None else QSettings('CaptureOneAI','Scopes')
         self.setAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating,True)
-        self.setWindowTitle('Capture One · 图像分析')
+        self.setWindowTitle('Capture One · 图像分析（快速预览）')
         self.resize(640,320);self.setMinimumSize(320,160)
         self.generation=0; self.worker=None; self.paused=False; self.pending=None
+        self.tray=None;self.suspended=False;self.exiting=False
         self.path=path; self.record=None; self.reference=None; self.pixmap=QPixmap();self.displayed_id=None
         self.region_dialog=None;self.pending_region=None
         self.next_delay=100;self.latency_log=deque(maxlen=32);self.artifact_key=None;self.artifact_kind=None
-        self.setStyleSheet('QWidget {background:#151b24;color:#e5edf7;font-size:12px;font-family:"Microsoft YaHei UI","Microsoft YaHei";} '
+        font = 'PingFang SC' if sys.platform == 'darwin' else 'Microsoft YaHei UI'
+        self.setStyleSheet('QWidget {background:#151b24;color:#e5edf7;font-size:12px;font-family:"'+font+'";} '
                           'QPushButton,QToolButton,QComboBox,QDoubleSpinBox {background:#263242;padding:3px;border:1px solid #41516a;border-radius:3px;}'
                           'QPushButton:checked {background:#315679;border:1px solid #83b9e8;}')
         layout=QVBoxLayout(self);layout.setContentsMargins(4,4,4,4);layout.setSpacing(3)
@@ -94,6 +96,8 @@ class ScopeWindow(QWidget):
         self.autostart=menu.addAction('随 C1 配套启动器打开');self.autostart.setCheckable(True)
         self.autostart.setChecked(self.settings.value('autostart',False,type=bool))
         self.autostart.toggled.connect(self.set_autostart)
+        if sys.platform == 'darwin':
+            self.autostart.setVisible(False)  # The packaged companion launcher is Windows-only.
         menu.addSeparator()
         self.layer_scope=menu.addAction('跟随当前图层蒙版');self.layer_scope.setCheckable(True);self.layer_scope.setChecked(True)
         self.layer_scope.toggled.connect(self.changed)
@@ -116,6 +120,7 @@ class ScopeWindow(QWidget):
         self.state=QLabel('等待更新');self.state.setWordWrap(True);details_layout.addWidget(self.state)
         self.stats=QLabel();self.stats.setWordWrap(True);details_layout.addWidget(self.stats)
         self.note=QLabel();self.note.setWordWrap(True);details_layout.addWidget(self.note)
+        read_stats=QPushButton('读取当前快速样本的数值');read_stats.clicked.connect(self.show_details);details_layout.addWidget(read_stats)
         self.timer=QTimer(self);self.timer.setSingleShot(True);self.timer.timeout.connect(self.tick);self.timer.start(50)
 
     def show_details(self):
@@ -123,6 +128,7 @@ class ScopeWindow(QWidget):
         self.displayed_id=None
         if self.record and self.record.get('analysis'):
             request={'action':'get','analysis_id':self.record['analysis']['analysis_id'],
+                     'include_statistics':True,
                      'include_vectorscope':self.mode.currentIndex()==list(VIEWS).index('vectorscope')}
             if self.reference:request['reference_id']=self.reference
             self.send(request)
@@ -173,19 +179,23 @@ class ScopeWindow(QWidget):
             self.path=path;self.changed()
         self.settings.sync()
         self.autostart.setChecked(self.settings.value('autostart',False,type=bool))
-        self.showNormal();self.raise_()
+        self.suspended=False
+        self.showNormal();self.raise_();self.activateWindow()
+        if not self.paused:self.timer.start(0)
 
     def changed(self,*args):
         self.generation+=1
+        self.pending=None
         self.displayed_id=None
         self.state.setText('等待新请求；当前图表为上一份结果')
         self.next_delay=0
-        if not self.paused:self.timer.start(180)
+        if not self.paused and not self.suspended:self.timer.start(50)
 
     def toggle_pause(self):
         self.paused=not self.paused;self.generation+=1
+        self.pending=None
         self.timer.stop();self.next_delay=0
-        if not self.paused:self.timer.start(0)
+        if not self.paused and not self.suspended:self.timer.start(0)
         self.pause.setIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_MediaPlay if self.paused else QStyle.StandardPixmap.SP_MediaPause))
         self.status_dot.setStyleSheet('color:#d9ad66' if self.paused else 'color:#8295aa')
         self.status_dot.setToolTip('已暂停' if self.paused else '等待更新')
@@ -199,11 +209,12 @@ class ScopeWindow(QWidget):
         self.path=None;self.changed()
 
     def send(self,request):
+        if self.suspended or self.exiting:return
         if self.worker is not None:
-            self.pending=request
+            self.pending=(self.generation,request)
             return
         self.timer.stop()
-        self.worker=Worker(self.generation,{'command':'analyze_image',**request})
+        self.worker=Worker(self.generation,{'command':'analyze_image','precision':'display',**request})
         self.worker.result.connect(self.receive)
         self.worker.finished.connect(self.finished)
         self.worker.start()
@@ -211,22 +222,24 @@ class ScopeWindow(QWidget):
     def finished(self):
         worker=self.worker;self.worker=None
         worker.deleteLater()
-        if self.pending:
-            pending=self.pending;self.pending=None
-            self.send(pending)
+        pending=self.pending;self.pending=None
+        if self.exiting:
+            self.quit_viewer();return
+        if self.suspended:return
+        if pending and pending[0]==self.generation:
+            self.send(pending[1])
         elif not self.paused:
             self.timer.start(self.next_delay)
 
     def tick(self,force=False):
-        if self.worker is not None or self.paused and not force:return
+        if self.suspended or self.exiting or self.worker is not None or self.paused and not force:return
         request={'action':'refresh','source':'file' if self.path else 'native',
                  'analysis_scope':'active_layer' if not self.path and self.layer_scope.isChecked() else 'image',
-                 'include_statistics':self.details.isVisible(),
+                 'include_statistics':False,
                  'include_vectorscope':self.mode.currentIndex()==list(VIEWS).index('vectorscope'),
                  'include_image':list(VIEWS)[self.mode.currentIndex()],
                  'roi':[v.value() for v in self.roi],'color_space':self.color_space.currentData()}
         if self.path:request['path']=self.path
-        if self.reference and self.details.isVisible():request['reference_id']=self.reference
         if self.displayed_id and not force:request['known_analysis_id']=self.displayed_id
         self.send(request)
 
@@ -282,9 +295,9 @@ class ScopeWindow(QWidget):
         target=data['target'];label=(target.get('variant') or {}).get('label') or Path(target['image']['path']).name
         revision=data.get('revision');size=data['analysis_size']
         layer=data.get('mask_layer',{}).get('name','整图')
-        self.identity.setText(f"{label} · {layer} · {data['source']} · {size[0]} × {size[1]} · 修订 {revision}\n分析编号 {data['analysis_id']}")
+        self.identity.setText(f"{label} · {layer} · 快速样本 · {size[0]} × {size[1]} · 修订 {revision}\n分析编号 {data['analysis_id']}（display）")
         stats=data['region'].get('statistics',{}).get('luma')
-        line='详细数值按需计算，与当前图表使用同一份像素快照'
+        line='快速样本用于观察趋势；数值按按钮读取。AI 可另取 exact 精确样本。'
         if stats:
             p=stats['percentiles_percent']
             line=f"亮度 P1 {p['P1']:.2f}% / P5 {p['P5']:.2f}% / P50 {p['P50']:.2f}% / P95 {p['P95']:.2f}% / P99 {p['P99']:.2f}%   近黑 {stats['near_black_percent']:.3f}% · 近白 {stats['near_white_percent']:.3f}%"
@@ -292,7 +305,9 @@ class ScopeWindow(QWidget):
         if diff:
             line+='\n参考差值：'+(f"亮度均值 {diff['statistics']['luma']['mean_percent']:+.2f} 个百分点" if 'statistics' in diff else diff['reason'])
         self.stats.setText(line)
-        self.note.setText('8 位预览 · '+('无 ICC，假定 sRGB；色彩未独立确认' if data['color']['confirmation'].startswith('assumed') else '已按嵌入 ICC 转换')+' → '+data['color']['analysis_space']+' · 近白比例不代表 RAW 高光不可恢复'+(' · 按当前图层蒙版灰度加权，肤色线不是皮肤检测' if data.get('analysis_scope')=='active_layer' else ''))
+        color_note=('C1 当前画面按 ICC 转为 sRGB，含校样显示效果' if data.get('sample_source')=='viewer_cache' else
+                    '无 ICC，假定 sRGB；色彩未独立确认' if data['color']['confirmation'].startswith('assumed') else '已按嵌入 ICC 转换')
+        self.note.setText('8 位预览 · '+color_note+' → '+data['color']['analysis_space']+' · 近白比例不代表 RAW 高光不可恢复'+(' · 按当前图层蒙版灰度加权，肤色线不是皮肤检测' if data.get('analysis_scope')=='active_layer' else ''))
         artifact=result.get('artifact')
         if artifact:
             key=(artifact['path'],artifact['sha256'])
@@ -309,6 +324,7 @@ class ScopeWindow(QWidget):
         data=result.get('analysis',{})
         row={'received_at_unix':time.time(),'request_seconds':result.get('_window_request_seconds'),
              'widget_update_seconds':time.perf_counter()-received,
+             'window_visible':self.isVisible(),'resident_entry':self.tray is not None and self.tray.isVisible(),
              'state':result.get('freshness',{}).get('state'),'next_check_ms':delay,
              'analysis_id':data.get('analysis_id'),'stages':data.get('timing_seconds'),
              'error':str(result.get('error') or '')[:500]}
@@ -327,11 +343,55 @@ class ScopeWindow(QWidget):
 
     def closeEvent(self,event):
         self.timer.stop()
+        if self.tray is not None and not self.exiting:
+            self.suspended=True;self.generation+=1;self.pending=None
+            self.hide();self.details.hide()
+            if self.region_dialog:self.region_dialog.close()
+            event.ignore();return
         if self.worker is not None:
             self.paused=True;self.generation+=1;self.pending=None
             self.state.setText('正在结束本次只读取图，完成后关闭')
             self.worker.finished.connect(self.close);event.ignore()
         else:event.accept()
+
+    def install_resident_menu(self,app):
+        if sys.platform!='darwin' or not QSystemTrayIcon.isSystemTrayAvailable():return False
+        pixmap=QPixmap(24,24);pixmap.fill(Qt.GlobalColor.transparent)
+        painter=QPainter(pixmap);painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        painter.setPen(QPen(QColor('black'),2))
+        points=[(2,15),(5,15),(7,7),(10,20),(13,4),(16,16),(19,10),(22,10)]
+        for a,b in zip(points,points[1:]):painter.drawLine(*a,*b)
+        painter.end();icon=QIcon(pixmap);icon.setIsMask(True)
+        self.tray=QSystemTrayIcon(icon,self);self.tray.setToolTip('Capture One 图像分析')
+        self.tray_menu=QMenu(self)
+        self.tray_menu.addAction('显示图像分析',lambda:self.open_request({'file':self.path}))
+        self.tray_menu.addAction('隐藏窗口（暂停读取）',self.close)
+        self.tray_menu.addSeparator()
+        for mode,label in VIEWS.items():
+            self.tray_menu.addAction(label,lambda checked=False,mode=mode:self.open_request({'mode':mode,'file':self.path}))
+        self.tray_menu.addSeparator();self.tray_menu.addAction('退出图像分析',self.quit_viewer)
+        self.tray.setContextMenu(self.tray_menu);self.tray.show()
+        app.setQuitOnLastWindowClosed(False)
+        return True
+
+    def quit_viewer(self):
+        self.exiting=True;self.generation+=1;self.pending=None;self.timer.stop()
+        self.hide();self.details.hide()
+        if self.region_dialog:self.region_dialog.close()
+        if self.worker is not None:return
+        if self.tray:self.tray.hide()
+        app=QApplication.instance();app.exit_ready=True;app.quit()
+
+
+class ScopeApplication(QApplication):
+    """Let an in-flight read finish before macOS Quit destroys its QThread."""
+    window=None
+    exit_ready=False
+
+    def event(self,event):
+        if event.type()==QEvent.Type.Quit and self.window is not None and not self.exit_ready:
+            self.window.quit_viewer();return True
+        return super().event(event)
 
 
 class SingleWindow:
@@ -393,7 +453,7 @@ def main():
     parser.add_argument('--autostart',choices=['on','off'])
     parser.add_argument('--configure-only',action='store_true')
     args=parser.parse_args()
-    app=QApplication.instance() or QApplication(sys.argv)
+    app=QApplication.instance() or ScopeApplication(sys.argv)
     app.setOrganizationName('CaptureOneAI');app.setApplicationName('Scopes')
     settings=QSettings('CaptureOneAI','Scopes')
     if args.autostart:
@@ -402,8 +462,12 @@ def main():
     instance=SingleWindow();request={'mode':args.mode,'file':args.file}
     if not instance.claim(request):return 0
     window=ScopeWindow(args.file,settings=settings)
+    app.window=window
+    window.install_resident_menu(app)
     if args.mode:window.mode.setCurrentIndex(list(VIEWS).index(args.mode))
     instance.listen(window);window.show()
+    if not args.if_enabled:
+        window.raise_();window.activateWindow()
     return app.exec()
 
 

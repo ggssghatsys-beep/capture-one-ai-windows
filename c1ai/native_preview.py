@@ -313,7 +313,8 @@ def verify_recipe(backend, observation, expected_recipe, *, allow_select=False):
             row = snapshot["row"]
             if row.get("enabled") is not True or row.get("offscreen") is not False or "SelectionItem" not in row.get("patterns", []):
                 fail("PREVIEW_RECIPE_UNAVAILABLE", "无法用原生选择接口显示配方设置。")
-            invoke(backend, observation, snapshot["selector"], "preview.select_recipe", "select")
+            invoke(backend, observation, snapshot["selector"], "preview.select_recipe", "select",
+                   intent={"before": copy.deepcopy(observation)})
             nodes = _inspect_export(backend, observation)
             after = _snapshot_recipe(nodes, expected_recipe)
             if (after is None or not after["selected"] or
@@ -344,7 +345,8 @@ def verify_recipe(backend, observation, expected_recipe, *, allow_select=False):
             fail("PREVIEW_RECIPE_CHANGED", "导出设置页不再属于已核验的预览配方。")
         if row.get("enabled") is not True or row.get("offscreen") is not False or "SelectionItem" not in row.get("patterns", []):
             fail("PREVIEW_RECIPE_UNAVAILABLE", "无法用原生选择接口显示配方设置。")
-        invoke(backend, observation, selector, "preview.select_recipe", "select")
+        invoke(backend, observation, selector, "preview.select_recipe", "select",
+               intent={"before": copy.deepcopy(observation)})
     nodes = _inspect_export(backend, observation)
     current = _checked(nodes)
     current_labels = _labels(nodes)
@@ -410,7 +412,8 @@ def _open_verified_recipe(backend, observation, expected_recipe):
     except Exception as exc:
         if getattr(exc, "code", None) != "CONTROL_NOT_FOUND":
             raise
-        invoke(backend, observation, EXPORT_OPEN, "preview.open_export")
+        invoke(backend, observation, EXPORT_OPEN, "preview.open_export",
+               intent={"before": copy.deepcopy(observation)})
     return verify_recipe(backend, observation, expected_recipe, allow_select=True)
 
 

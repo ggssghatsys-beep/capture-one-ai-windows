@@ -64,7 +64,7 @@ class SettingsDialog(QDialog):
         effort_row = QHBoxLayout()
         effort_row.addWidget(self.effort, 1)
         effort_row.addWidget(self.load_efforts)
-        self.remember = QCheckBox('在本机加密保存密钥（当前 Windows 用户）')
+        self.remember = QCheckBox('在 macOS 钥匙串保存密钥' if sys.platform == 'darwin' else '在本机加密保存密钥（当前 Windows 用户）')
         self.remember.setChecked(settings.get('remember', False))
         form.addRow('API 地址', self.url)
         form.addRow('API 密钥', self.key)
@@ -419,7 +419,8 @@ def main():
     instance = SingleWindow()  # Existing per-user locking; application directory separates it from Scopes.
     if not instance.claim({}):
         return
-    app.setStyleSheet('QWidget { font-family: "Microsoft YaHei UI"; font-size: 12px; } QPushButton { padding: 6px 12px; }')
+    font = 'PingFang SC' if sys.platform == 'darwin' else 'Microsoft YaHei UI'
+    app.setStyleSheet('QWidget { font-family: "'+font+'"; font-size: 12px; } QPushButton { padding: 6px 12px; }')
     window = AIWindow()
     instance.listen(window)
     window.show()

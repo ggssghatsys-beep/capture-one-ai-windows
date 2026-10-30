@@ -12,7 +12,7 @@ def test_dragging_retries_promptly_but_disconnect_backs_off():
     assert refresh_delay_ms({'freshness':{'state':'waiting'},
         'error':'Native renderer has not completed the observed revision'})==50
     assert refresh_delay_ms({'freshness':{'state':'stale'},'error':'Connection refused'})==1500
-    assert refresh_delay_ms({'freshness':{'state':'ready'}})==100
+    assert refresh_delay_ms({'freshness':{'state':'ready'}})==50
     assert refresh_delay_ms({'freshness':{'state':'stale'},'error':'System.InvalidOperationException: native target changed'})==50
     assert refresh_delay_ms({'freshness':{'state':'stale'},'error':'main form not ready'})==200
     for message in ('native preview still rendering; poll its id before starting another',

@@ -6,13 +6,13 @@
 
 在“⋯ → 在预览中框选区域…”拖动矩形，确认后分析矩形与蒙版的交集。预览保持原比例，留黑区域不参与坐标换算；框选不会修改 C1 裁剪或蒙版。取消“跟随当前图层蒙版”可分析整图。照片、图层或裁剪发生变化后，不接受旧预览上尚未提交的框选。
 
-MCP 新增 `analysis_scope: "active_layer"`；省略或 `"image"` 保留旧整图语义。窗口与 AI 可通过同一 `analysis_id` 获取同份蒙版统计。`mask_layer`、`mask_render_id`、`mask_sha256`、`sample_mask_sha256` 记录来源；蒙版与照片须通过同一实例、变体、图层、修订、尺寸及原生几何一致性检查。
+MCP 新增 `analysis_scope: "active_layer"`；省略或 `"image"` 保留旧整图语义。窗口与 AI 可通过同一 `analysis_id` 和 `precision: "display"` 获取同份快速蒙版样本的统计。`mask_layer`、`mask_render_id`、`mask_sha256`、`sample_mask_sha256` 记录来源；蒙版与照片须通过同一实例、变体、图层、修订、尺寸及原生几何一致性检查。
 
 蒙版灰度除以 255 作为像素权重，保留羽化，零覆盖像素排除。`pixel_count` 为非零覆盖像素数，`effective_pixel_count`、直方图计数、矢量图 `population` 为加权像素数；均值、端点比例、色相分布使用相同权重。蒙版分位数采用加权逆累积分布；无蒙版仍保持原线性插值分位数。蒙版变化即使面积相同也拒绝直接参考差值，避免比较不同区域。
 
 空蒙版或与 ROI 无交集返回 `freshness.state="empty"`，窗口清空图表，绝不回退整图。肤色参考线不自动识别皮肤：选中皮肤蒙版时才只统计皮肤；主体蒙版仍包含衣服等非皮肤区域。图层分析与拖动框选自 v0.3.0-alpha.2 提供，旧 v0.3.0-alpha.1 ZIP 不包含它们。
 
-独立图像分析自 0.3.0a1 提供，旧 0.2.0a1 Release 不包含它。沿用现有 Windows owner、连接、目标绑定和原生渲染接口；未另建调色服务，也未改变旧 `preview` 工具的含义。Windows 实测 C1 **16.8.6.3784 / Session**；Mac 取图适配尚未在本分支实现。
+独立图像分析自 0.3.0a1 提供，旧 0.2.0a1 Release 不包含它。沿用现有 owner、连接、目标绑定和原生渲染接口；未另建调色服务，也未改变旧 `preview` 工具的含义。Windows 原路线实测 C1 **16.8.6.3784 / Session**；Mac 原生桥的当前实测范围见 [MAC_STATUS](MAC_STATUS.md)。
 
 最新窗口采用一行工具栏＋图表，可缩小到 320×160；400×220 已检查。照片身份、ROI、详细数值、色彩假设移到“更多 → 区域、数值与状态”，主界面只用状态点及悬停提示提示等待／过期／失败。图表随窗口伸缩，统计范围和分析尺寸不随窗口变化。
 
@@ -20,7 +20,25 @@ MCP 新增 `analysis_scope: "active_layer"`；省略或 `"image"` 保留旧整�
 
 Adobe RGB 使用 563/256 gamma；Display P3 使用 D65 白点及 sRGB 传递函数，不是影院 DCI-P3 或 HDR P3。ICC 参数配置由 Qt QColorSpace 的标准命名空间生成，随源码安装于 `c1ai/profiles/`，运行转换无需 Qt。定义参照 [Adobe RGB 官方规格](https://www.adobe.com/digitalimag/pdfs/AdobeRGB1998.pdf) 和 [W3C CSS Color 4](https://www.w3.org/TR/css-color-4/#predefined-display-p3)。主波形图为相应编码 RGB 加权的 Y′近似，AI 元数据给出具体权重；线性光 Y 另外返回。
 
-最新分析来源改为 C1 原生位图的 **BGRA8 无压缩缓冲**，通过 `ToBitmapSourceDeepCopy`／`CopyPixels` 取得完整渲染像素，按图片和修订校验后传给共享分析核心，不经 PNG 编解码。内部使用有上限的 `.bgra` 本机缓存传递，尚非跨进程零拷贝。旧 `preview(kind=native)` 继续返回 PNG，独立缓存保证分析取图不会使该 PNG 的坐标映射编号失效。下文 PNG 格式记录是初始路线证据；新路线也仍为每通道 8 位、没有已确认的源 ICC。
+最新分析来源采用 C1 原生位图的 **BGRA8 无压缩缓冲**；Windows 通过 `ToBitmapSourceDeepCopy`／`CopyPixels` 取得完整渲染像素，Mac 通过已配置的原生桥读取像素，按图片和修订校验后传给共享分析核心，不经 PNG 编解码。内部使用有上限的 `.bgra` 本机缓存传递，尚非跨进程零拷贝。旧 `preview(kind=native)` 继续返回 PNG，独立缓存保证分析取图不会使该 PNG 的坐标映射编号失效。下文 PNG 格式记录是初始路线证据；新路线仍为每通道 8 位。Mac 快速 Viewer 样本通过原生 ICC 转成 sRGB；独立渲染尚未独立标定源色彩。
+
+Mac 窗口 `display` 优先读取当前原生 Viewer 的完整裁切缓存，严格核对修订、身份、完成状态和覆盖；无法取得合格缓存时才提交原生位图任务。Viewer 显示／校样效果已烘焙，CoreGraphics 转成 sRGB 后仍包含该效果，返回 `sample_source=viewer_cache` 和 `sample_limitation`；独立原生渲染返回 `sample_source=native_job`。`exact` 不读取 Viewer 缓存。参考比较额外核对稳定 `render_basis`（来源及 Viewer proof/display profile），避免把显示口径变化当成调色变化。详细面板明确标出快速样本和校样限制。
+
+Mac 窗口只读请求独立于编辑队列；连续刷新只绘制快速图表，详细数值由按钮或 AI 按需请求。新照片请求至窗口控件更新本机代表值为 0.140～0.162s；首次启动、宿主繁忙及精确局部统计尚不保证低于 0.5s，实测条件见 [验证记录](SCOPES_VALIDATION.md)。
+
+在 Mac 项目目录用明确的运行环境启动，避免系统按应用名打开其他版本的 Python：
+
+```sh
+./.venv/bin/python -m c1ai.scopes_window --mode waveform
+```
+
+## Mac 固定入口与菜单栏
+
+本机可运行 `./.venv/bin/python scripts/create_macos_scopes_shortcut.py`，生成用户“应用程序”和桌面上的 **Capture One 图像分析.app**。这是当前源码的本地快捷入口，不是独立安装包；固定使用本项目 `.venv`，不按“Python”应用名启动。
+
+打开后，菜单栏出现波形图标，可显示／隐藏窗口、切换四种视图或退出。Mac 关闭窗口会隐藏并停止读取，图标保留；再次点击桌面入口或菜单“显示图像分析”找回同一窗口。用户原先暂停时，重开仍保持暂停。“退出图像分析”会等当前只读请求结束，再退出窗口进程；共享 owner 和 C1 继续运行。没有设置开机自启。
+
+入口采用一次性启动器，每次打开经现有单窗口通道转交请求，避免 macOS 把重复打开吞为未处理的 reopen 事件。菜单栏使用现有 [Qt 官方 QSystemTrayIcon](https://doc.qt.io/qtforpython-6/PySide6/QtWidgets/QSystemTrayIcon.html)，不增加依赖。实机已验证隐藏／恢复、桌面重复打开、刷新恢复和在途读取时正常退出；无菜单栏支持时仍保留普通关窗退出。
 
 ## 启动
 
@@ -50,7 +68,7 @@ NumPy、Pillow/ImageCms 处理数值及色彩；PySide6-Essentials 提供窗口�
 
 原生取图调用已有 `GetICProcessSettings`、`VariantGeometryTransformer.CropRawConstrained` 和 `ProcessToBitmapScheduledAsync`；C# 增加处理修订读取和原生 BGRA 缓冲回传，旧 PNG 预览保持兼容。输出由 C1 应用曝光、白平衡、曲线、局部调整及真实裁剪。查看器缩放／平移不是输入参数。
 
-本机取得 **PNG / RGBA / 每通道 8 位 / 1067×1600 / 无嵌入 ICC**。分析固定长边不超过 1600，不放大小图。原生图像仍是预览，不是 RAW 像素，也不承诺更高位深。没有 ICC 时明确标注“假定 sRGB，色彩未独立确认”；带 ICC 的文件用 ImageCms 相对色度意图转到 sRGB。用于返回给 AI 的规范化 PNG 带 sRGB ICC，但原始色彩假设仍保留在元数据，不能由此冒充源图色彩已确认。
+初始路线在本机取得 **PNG / RGBA / 每通道 8 位 / 1067×1600 / 无嵌入 ICC**。现在 `exact` 分析长边不超过 1600，窗口 `display` 快速样本不超过 640，均不放大小图。原生图像仍是预览，不是 RAW 像素，也不承诺更高位深。没有 ICC 时明确标注“假定 sRGB，色彩未独立确认”；带 ICC 的文件用 ImageCms 相对色度意图转到 sRGB。用于返回给 AI 的规范化 PNG 带 sRGB ICC，但原始色彩假设仍保留在元数据，不能由此冒充源图色彩已确认。
 
 Capture Pilot 是另一条候选路线：根据 LiveLegacy 实现了诊断探针，但本机探测端口实际连接被拒绝，未作为生产数据源，也不宣称 Windows 支持 Live for Studio。现有原生内核路线已满足直接取图，不要求用户打开 HTTP 服务或反复导出。
 
@@ -79,9 +97,9 @@ Capture Pilot 是另一条候选路线：根据 LiveLegacy 实现了诊断探针
 | Start-CaptureOne.ps1 -NoScopes | 本次只启动 C1，不改联动偏好 |
 | analyze_image(action="open_window", view="histogram") | AI 明确请求打开给人看的窗口；返回 open_requested，不冒充最新图像 |
 
-关闭窗口即停止该窗口的轮询，不影响已有 MCP/owner。窗口不必常驻；随时从桌面重开。未选图、C1 尚未就绪或断连时显示状态，读取恢复后会继续更新。视图、色彩空间、置顶和联动开关保存在当前用户设置中；图像来源重新启动默认跟随 C1。没有开机常驻监视进程，也不会因普通 MCP 数值请求突然弹出窗口。
+Windows 关闭窗口即停止该窗口的轮询并退出窗口进程；Mac 关闭窗口隐藏到菜单栏并停止读取，菜单中的“退出图像分析”才结束窗口进程。两者均不影响已有 MCP/owner。窗口不必常驻；随时从桌面重开。未选图、C1 尚未就绪或断连时显示状态，读取恢复后会继续更新。视图、色彩空间、置顶和联动开关保存在当前用户设置中；图像来源重新启动默认跟随 C1。没有开机常驻监视进程，也不会因普通 MCP 数值请求突然弹出窗口。
 
-AI 无窗口用法：照常请求 `analyze_image()`。若要和人查看的结果严格对应，使用详细面板中的 analysis_id 调用 get，检查同一色彩空间和 freshness。打开窗口与读取分析是两个明确动作，窗口复用消息只接受视图及图像文件，不接受编辑命令。
+AI 无窗口用法：照常请求 `analyze_image()`。若要和人查看的结果严格对应，使用详细面板中的 analysis_id 调用 `get(precision="display")`，检查同一精度、色彩空间和 freshness。打开窗口与读取分析是两个明确动作，窗口复用消息只接受视图及图像文件，不接受编辑命令。
 
 新增 MCP 工具 `analyze_image`；CLI 的同名命令或 `c1ai.client.call` 共用同一个分析服务。以下为 Python/JSON CLI 请求，MCP 去掉 `command`：
 
@@ -94,8 +112,10 @@ AI 无窗口用法：照常请求 `analyze_image()`。若要和人查看的结�
 ```
 
 ```json
-{"command":"analyze_image","action":"get","analysis_id":"窗口显示的分析编号","include_image":"preview"}
+{"command":"analyze_image","action":"get","analysis_id":"窗口显示的分析编号","precision":"display","include_image":"preview"}
 ```
+
+`precision` 可选 `exact`（AI 默认，长边至多 1600）或 `display`（窗口固定使用，长边至多 640）。两者的缓存、分析编号和比较口径分开；`get` 只取该编号的原像素，不能把快速样本升级为精确样本。MCP 读取窗口编号须显式指定 `precision="display"`，需要更细的统计则另发 `refresh(precision="exact")`。这里的 exact 是分析样本规格，仍是 8 位预览，不表示 RAW 全分辨率精度。
 
 动作：`refresh` 默认获取当前结果；`status` 只检查身份和修订，不重新渲染；`get` 取指定快照；`reference` 用 `analysis_id` 固定参考；`clear_reference` 解除固定。`source=file` 时须传 `path`。`include_image` 可取 `none`、`preview`、`waveform`、`parade`、`histogram`、`vectorscope`；默认不发送大图。`target` 可传已有 read 返回的完整目标，错配照旧拒绝。
 
@@ -108,9 +128,9 @@ AI 无窗口用法：照常请求 `analyze_image()`。若要和人查看的结�
 - 按需返回四组 256-bin 直方图：整图为整数像素计数，蒙版分析为浮点覆盖权重总和；不默认塞入逐像素数组。
 - 与 `reference_id` 的差值，单位为**百分点，当前减参考**。同一照片、来源、色彩口径、分析尺寸、裁剪、ROI 和像素数才比较；可以比较同一照片的不同变体。
 
-窗口与 MCP 共享同一个 owner 中的 `Pixels` 缓冲、分析快照和图片哈希。新增指标也必须从这一缓冲计算，返回单位、口径及数值，并继承身份、新鲜度、ROI 和参考比较约束；不能只画图或让 AI 从界面抄值。
+窗口与 MCP 共享同一个 owner 中的分析服务；每个 `analysis_id` 固定自己的精度、`Pixels` 缓冲和图片哈希。新增指标也必须从这一缓冲计算，返回单位、口径及数值，并继承身份、新鲜度、ROI 和参考比较约束；不能只画图或让 AI 从界面抄值。
 
-紧凑窗口默认使用内部 `include_statistics=false` 请求，只计算图表所需数据，快照标记 `statistics_state=not_requested`。打开“区域、数值与状态”或 AI 用 `get` 请求该 `analysis_id` 时，从保留的同一份像素计算完整统计并缓存，标记 `statistics_state=ready`；参考差值也会补齐所需快照统计。MCP 默认始终返回完整数值，原接口不需修改。计算结束后重新核对修订，期间发生编辑的旧快照仍标为过期。关闭详细窗口后恢复轻量刷新；固定参考本身不会强制每帧计算数值差。
+紧凑窗口默认使用内部 `include_statistics=false` 请求，只计算图表所需数据，快照标记 `statistics_state=not_requested`。打开“区域、数值与状态”或 AI 用 `get` 请求该 `analysis_id` 时，从保留的同一份像素计算完整统计并缓存，标记 `statistics_state=ready`；参考差值也会补齐所需快照统计。MCP 默认从 exact 样本返回完整数值。计算结束后重新核对修订，期间发生编辑的旧快照仍标为过期。详情打开后连续刷新也只更新图表，点击“读取当前快速样本的数值”才计算当前数值和参考差；固定参考本身不会强制每帧计算数值差。
 
 已确认 C1 内部存在 L/R/G/B 直方图数组类型，但尚未确认其缓存与本项目渲染帧、裁剪、色彩空间及修订的严格对应，所以目前没有用这些数组替换同源像素统计。普通直方图也不能提供波形横向位置及任意 ROI 的数值。
 
@@ -148,7 +168,7 @@ ROI 为图像归一化边界 `[left,top,right,bottom]`，不接受屏幕坐标�
 
 新增模块为 `image_analysis.py`、`analysis_sources.py`、`analysis_service.py`、`scopes_window.py`。共享改动涉及 `core.py`、`contracts.py`、`mcp_server.py`、`__main__.py`、`guidance.py`、依赖和发布检查。Windows C# 增加 context 的 `process_revision`、原生 BGRA 缓冲及独立预览任务缓存。现有原生读写、preview 的 kind 和保护契约不变。
 
-Mac 可复用数值核心和窗口；需把 `NativeSource` 的 Windows 内部渲染对接替换为经过实测的 Mac 来源，保持返回身份、修订、真实裁剪和完成证据。当前 owner IPC 是 Windows 实现，不能因窗口使用 Qt 就宣称本分支已支持 Mac。
+Mac 通过已有 owner 与版本绑定原生桥提供取图，复用数值核心和窗口，保持身份、修订、真实裁剪和完成证据。新快速路径使用轻量身份／修订读取，避免每帧触发完整图层读取和保存；代码通过针对性测试，实际端到端延迟另以 [MAC_STATUS](MAC_STATUS.md) 中的本机记录为准，不能由离线计时推断。
 
 ## 矢量图与肤色参考
 

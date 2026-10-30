@@ -1,4 +1,4 @@
-"""One serialized execution path; backend observations are evidence, not promises."""
+"""Serialized edits and an opt-in read-only display lane; observations are evidence."""
 import math
 from collections import Counter
 import threading
@@ -19,8 +19,33 @@ class Core:
         self.journal = Journal(state_dir)
         self._lock = threading.RLock()
         self._analysis = None
+        self._analysis_root = self.journal.state_dir
+        self._display_lock = threading.RLock()
+        self._display_analysis = None
+
+    def is_display_request(self, request):
+        """Only a backend with thread-safe, journal-free native reads may opt in."""
+        return (getattr(self.backend, 'analysis_display_concurrent', False) is True
+                and isinstance(request, dict) and request.get('command') == 'analyze_image'
+                and request.get('precision') == 'display'
+                and request.get('action', 'refresh') in ('refresh', 'status', 'get', 'reference', 'clear_reference'))
+
+    def _dispatch_display(self, request):
+        try:
+            digest(request)
+            with self._display_lock:
+                if self._display_analysis is None:
+                    from .analysis_service import AnalysisService
+                    self._display_analysis = AnalysisService(self.backend, self._analysis_root, namespace='display')
+                return self._display_analysis.dispatch(request, self._target)
+        except Refused as error:
+            return {"status": "refused", "error": {"code": error.code, "message": str(error)}}
+        except Exception as error:
+            return {"status": "refused", "error": self._error(error)}
 
     def dispatch(self, request):
+        if self.is_display_request(request):
+            return self._dispatch_display(request)
         with self._lock:
             try:
                 if not isinstance(request, dict) or request.get("command") not in COMMANDS:
@@ -29,6 +54,8 @@ class Core:
                     request={**request,'kind':'native'}
                 digest(request)  # Reject non-JSON values, including NaN, before any work.
                 command = request["command"]
+                if command == "adjust" and "batch" in request:
+                    return self._public_result(self._batch(request))
                 if command == "analyze_image":
                     if request.get('action')=='open_window':
                         from .scopes_launch import open_window
@@ -60,7 +87,12 @@ class Core:
                     else:
                         observation = self._observe(fields_for(request))
                     self._target(request.get("target"), observation["target"])
-                    return dict(observation, status="ok", guidance=read_guidance(request,observation))
+                    result = dict(observation, status="ok", guidance=read_guidance(request,observation))
+                    if observation["target"].get("instance", {}).get("platform") == "macos" and request.get("module"):
+                        capability = self._capabilities(observation).get("modules", {}).get(request["module"])
+                        if capability is not None:
+                            result["module_capability"] = capability
+                    return result
                 if command == "operations":
                     return self._public_result(self._operations(request))
                 if command == "images" and request.get("action") == "list":
@@ -159,8 +191,9 @@ class Core:
             raise Refused("missing_precondition", "target and observation_token are required")
         saved = self.journal.observation(request["observation_token"])
         if saved.get('navigation'):
-            if request['command']!='images' or request.get('action')!='select':
-                raise Refused('navigation_only','A list token can select a photo; read the photo before editing')
+            actions = getattr(self.backend, 'navigation_actions', {'select'})
+            if request['command']!='images' or request.get('action') not in actions:
+                raise Refused('navigation_only','A navigation token can only select photos; read the photo before editing')
             current=self.backend.image_action('list',{'limit':1},None)['_navigation_observation']
             self._target(request['target'],current['target'])
             if self.journal.observe(current)!=request['observation_token']:
@@ -184,6 +217,96 @@ class Core:
             if observation["observation_token"] != request["observation_token"]:
                 raise Refused("stale_observation", "Values changed after the supplied observation")
         return observation
+
+    def _batch(self, request):
+        """A bounded sequence of ordinary guarded edits, with stable child IDs."""
+        if not isinstance(request.get("request_id"), str) or not request["request_id"].strip():
+            raise Refused("missing_request_id", "A nonempty request_id is required")
+        if not getattr(self.backend, "batch_supported", False):
+            raise Refused("unsupported", "Batch execution is not qualified by this backend")
+        if set(request) - {"command", "request_id", "batch"}:
+            raise Refused("invalid_batch", "Use batch or a single adjustment, not both")
+        items = request["batch"]
+        if not isinstance(items, list) or not 1 <= len(items) <= 16:
+            raise Refused("invalid_batch", "Provide 1..16 explicit candidate adjustments")
+        existing = self.journal.existing(request)
+        if existing:
+            return dict(existing, existing=True, replayed=False)
+        current = self._observe([])
+        # Reject malformed, unqualified, or cross-instance entries before moving selection.
+        for item in items:
+            if not isinstance(item, dict) or set(item) != {"target", "module", "patch", "observation_token"}:
+                raise Refused("invalid_batch", "Each item needs target, module, patch and observation_token")
+            saved = self.journal.observation(item["observation_token"])
+            self._target(item["target"], saved["target"])
+            if any(saved["target"][key] != current["target"][key] for key in ("instance", "document")):
+                raise Refused("target_changed", "Batch entries must belong to the current process and Session")
+            if saved.get("navigation"):
+                raise Refused("navigation_only", "Read each candidate module before preparing a batch")
+            module = item["module"]
+            if module in {"layers", "masks"}:
+                raise Refused("unsupported", "Batch currently supports color adjustments only")
+            if module in STRUCTURED_MODULES:
+                validate_structured_patch(item)
+                if saved.get("module") != module or not self._capabilities(saved).get("modules", {}).get(module, {}).get("writable"):
+                    raise Refused("unsupported", "A batch item has no qualified module observation")
+            else:
+                validate_patch(item, self._metadata(saved))
+                if saved.get("module") or not set(item["patch"]) <= saved.get("values", {}).keys():
+                    raise Refused("incomplete_observation", "Observe each batch item's numeric fields first")
+        record, created = self.journal.begin(request, current["target"], current)
+        if not created:
+            return dict(record, existing=True, replayed=False)
+        operation_id, children = record["operation_id"], []
+        prefix = request["request_id"]
+        child_in_flight = False
+        try:
+            for index, item in enumerate(items):
+                current = self._observe([])
+                for key in ("instance", "document"):
+                    if current["target"][key] != item["target"][key]:
+                        raise Refused("target_changed", "Session changed during batch execution")
+                if current["target"] != item["target"]:
+                    selection_id = f"{prefix}:select:{index}"
+                    self.journal.update(operation_id, after=None, progress={"index": index, "child_request_id": selection_id},
+                                        result={"children": children})
+                    child_in_flight = True
+                    selection = self.dispatch({"command": "images", "action": "select",
+                        "variant_id": int(item["target"]["variant"]["id"]), "target": current["target"],
+                        "observation_token": current["observation_token"], "request_id": selection_id})
+                    children.append({"index": index, "kind": "selection", "request_id": selection_id,
+                                     "operation_id": selection.get("operation_id"), "status": selection["status"]})
+                    child_in_flight = False
+                    if selection["status"] != "completed":
+                        raise Refused("batch_stopped", "Candidate selection did not complete; inspect the child operation")
+                child_id = f"{prefix}:adjust:{index}"
+                self.journal.update(operation_id, after=None, progress={"index": index, "child_request_id": child_id},
+                                    result={"children": children})
+                child_in_flight = True
+                result = self.dispatch({"command": "adjust", **item, "request_id": child_id})
+                children.append({"index": index, "kind": "adjustment", "request_id": child_id,
+                                 "operation_id": result.get("operation_id"), "status": result["status"],
+                                 "error": result.get("error")})
+                child_in_flight = False
+                if result["status"] not in {"completed", "control_confirmed"}:
+                    raise Refused("batch_stopped", "Batch stopped at the first unsuccessful edit; no item is replayed")
+            return self.journal.update(operation_id, status="completed", after=result["after"], model_verified=True,
+                result={"children": children, "completed_adjustments": len(items), "atomic": False,
+                        "selection": "last_processed_candidate", "render_verified": False})
+        except Exception as error:
+            unknown = child_in_flight or any(child["status"] == "outcome_unknown" for child in children)
+            changed = any(child["status"] in {"completed", "control_confirmed", "partial"} for child in children)
+            try:
+                return self.journal.update(operation_id,
+                    status="outcome_unknown" if unknown else "partial" if changed else "refused", after=None,
+                    result={"children": children, "atomic": False, "replayed": False}, error=self._error(error))
+            except Exception as journal_error:
+                # Never report a harmless refusal when durable completion could
+                # not be saved after dispatch. The original ID remains queryable.
+                return {"operation_id": operation_id, "request_id": prefix, "status": "outcome_unknown",
+                        "after": None, "error": self._error(journal_error), "replayed": False,
+                        "result": {"children": children, "atomic": False},
+                        "query": {"command": "operations", "action": "get", "request_id": prefix}}
 
     def _write(self, request):
         request_id = request.get("request_id")
@@ -212,6 +335,8 @@ class Core:
                     raise Refused('invalid_points','Use the returned preview_id and up to 256 coordinate pairs')
         structured = command == "adjust" and request.get("module") in STRUCTURED_MODULES
         module_action = command == 'adjust' and isinstance(request.get('patch'),dict) and request['patch'].get('action') in {'reset','paste'}
+        if module_action and getattr(self.backend, 'module_actions_supported', True) is False:
+            raise Refused('unsupported', 'Reset/paste is not implemented by this platform backend')
         patch = (validate_module_action(request) if module_action else validate_structured_patch(request) if structured else validate_patch_schema(request)) if command == "adjust" else None
         observation = self._preflight(request)
         metadata = self._metadata(observation) if patch and not structured else {}
@@ -235,9 +360,13 @@ class Core:
             operation_id, name, {"action": name, **(intent or {})}, func)
         try:
             if module_action:
-                from .native_modules import apply_module_action
                 source=self.journal.observation(patch['source_observation_token']) if patch['action']=='paste' else None
-                result=apply_module_action(self.backend,request['module'],patch,observation,source)
+                apply=getattr(self.backend,'apply_module_action',None)
+                if callable(apply):
+                    result=apply(request['module'],patch,observation,source)
+                else:
+                    from .native_modules import apply_module_action
+                    result=apply_module_action(self.backend,request['module'],patch,observation,source)
                 after=result['after'];self._target(observation['target'],after['target'])
                 after['observation_token']=self.journal.observe(after)
                 return self.journal.update(operation_id,status='control_confirmed',after=after,result=result,model_verified=True)
@@ -325,6 +454,10 @@ class Core:
 
     @staticmethod
     def _matches(actual, expected, metadata):
+        if actual is None and expected is None and metadata.get("nullable") is True:
+            return True
+        if expected is None or actual is None:
+            return False
         tolerance = metadata.get("tolerance", 0)
         return isinstance(actual, (int, float)) and not isinstance(actual, bool) and math.isclose(
             actual, expected, rel_tol=0, abs_tol=tolerance)
@@ -348,6 +481,14 @@ class Core:
                     and isinstance(result.get('values'),dict) and result['values'].keys()==observation['values'].keys()):
                 # Native setters return the complete module in the same UI-thread call.
                 after={**observation,'values':result['values'],'native_readback':result}
+                after['observation_token']=self.journal.observe(after)
+            elif (isinstance(result,dict) and result.get('model_verified') is True
+                    and isinstance(result.get('observation'),dict)
+                    and result['observation'].get('target')==observation['target']
+                    and isinstance(result['observation'].get('values'),dict)
+                    and result['observation']['values'].keys()==observation['values'].keys()
+                    and result['observation'].get('evidence',{}).get('model_verified') is True):
+                after=result['observation']
                 after['observation_token']=self.journal.observe(after)
             else:after=self._observe(list(observation['values']))
             self._target(observation['target'],after['target'])
@@ -448,10 +589,29 @@ class Core:
             if new != [changed if n==patch['layer_ref'] else n for n in old] or selected!=changed:
                 raise Refused('invalid_transition','Rename must preserve layer identity and order')
             return
+        if (module == 'masks' and action in {'combine_ai', 'combine'}
+                and expected.get('instance', {}).get('platform') == 'macos'):
+            previous = before['state']['selected_layer']
+            stable = lambda item: {key: value for key, value in item.items() if key != 'name'}
+            if (previous.get('is_image_layer') or previous.get('identity_source') != 'session_mask_uuid_readonly'
+                    or len(old) != len(new) or stable(previous) != stable(selected)
+                    or new != [selected if item == previous else item for item in old]
+                    or evidence.get('selected_parent_rename') != ('native_combine_ai' if action == 'combine_ai' else 'native_combine_existing')
+                    or after['state']['details'][new.index(selected)].get('name') != selected.get('name')):
+                raise Refused('invalid_transition', 'Mask combination may only rename its same selected parent UUID')
+            return
         if module=='masks' and action=='copy':
             old_selected=before['state']['selected_layer']
             untouched=[n for n in old if n!=old_selected]
-            if len(old)!=len(new) or [n for n in new if n!=selected]!=untouched or selected.get('object_id')!=old_selected.get('object_id'):
+            same_object = old_selected.get('object_id') is not None and selected.get('object_id') == old_selected['object_id']
+            stable = lambda ref: {k:v for k,v in ref.items() if k not in {'native_id','runtime_id'}}
+            mac_replacement = (expected.get('instance',{}).get('platform') == 'macos'
+                and evidence.get('copy_identity') == 'native_mask_uuid_replaced_by_copy'
+                and old_selected.get('identity_source') == 'session_mask_uuid_readonly'
+                and selected.get('native_id') and selected.get('native_id') not in [n.get('native_id') for n in untouched]
+                and stable(old_selected) == stable(selected) and old.index(old_selected) == new.index(selected))
+            if (len(old)!=len(new) or [n for n in new if n!=selected]!=untouched
+                    or not (same_object or selected == old_selected or mac_replacement)):
                 raise Refused('invalid_transition','Mask copy must preserve the destination layer and unrelated layers')
             return
         common = old_map.keys() & new_map.keys()

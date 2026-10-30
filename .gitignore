@@ -8,6 +8,8 @@ __pycache__/
 build/
 dist/
 internal/bin/
+a.out
+*.dylib
 
 # Machine configuration and private historical evidence
 config/mcp-server.json

@@ -35,9 +35,11 @@ def launch_owner():
     project = Path(__file__).resolve().parent.parent
     # Spawn independently of the MCP stdio process; never inherit its streams.
     with (root / "owner.log").open("ab", buffering=0) as log:
+        platform_options = ({"start_new_session": True} if sys.platform == "darwin" else
+                            {"creationflags": subprocess.CREATE_NO_WINDOW | subprocess.CREATE_NEW_PROCESS_GROUP})
         subprocess.Popen([sys.executable, "-m", "c1ai", "owner", "--serve"],
                          cwd=project, stdin=subprocess.DEVNULL, stdout=log, stderr=log,
-                         creationflags=subprocess.CREATE_NO_WINDOW | subprocess.CREATE_NEW_PROCESS_GROUP,
+                         **platform_options,
                          env={**os.environ, "PYTHONUTF8": "1"},
                          close_fds=True)
 
@@ -77,6 +79,10 @@ def send_request(request: dict, *, timeout: float = 120, autostart: bool = True,
         raise ValueError("IPC request exceeds 4 MiB")
     if address is not None and autostart:
         raise ValueError("Custom test endpoints cannot launch a production owner")
+    if sys.platform == "darwin":
+        from .macos_ipc import send_request as macos_request
+        return macos_request(payload, timeout=timeout, autostart=autostart,
+                             address=address, connect_timeout=connect_timeout)
     handle = _connect(address or endpoint(), autostart=autostart, timeout=connect_timeout)
     possibly_sent = False
     try:

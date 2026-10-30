@@ -1,6 +1,6 @@
 #requires -Version 7.6
 [CmdletBinding()]
-param([string]$Python='python', [string]$SessionPath, [switch]$EnvironmentOnly, [switch]$WithScopes, [switch]$WithAI)
+param([string]$Python='python', [string]$SessionPath, [switch]$EnvironmentOnly, [switch]$WithScopes, [switch]$WithAI, [switch]$NoScopesShortcut)
 $ErrorActionPreference='Stop'
 if(-not $IsWindows){throw 'This package requires Windows.'}
 $project=$PSScriptRoot
@@ -30,7 +30,7 @@ Write-Output 'Installed. MCP config: config/mcp-server.local.json'
 if($WithScopes){
  & $pythonExe -m c1ai.scopes_window --autostart on --configure-only
  if($LASTEXITCODE -ne 0){throw 'Could not save scopes startup preference.'}
- & (Join-Path $project 'Setup-Shortcuts.ps1') -WithAI:$WithAI
+ & (Join-Path $project 'Setup-Shortcuts.ps1') -WithAI:$WithAI -WithoutScopes:$NoScopesShortcut
 }
-elseif($WithAI){ & (Join-Path $project 'Setup-Shortcuts.ps1') -WithAI }
+elseif($WithAI){ & (Join-Path $project 'Setup-Shortcuts.ps1') -WithAI -WithoutScopes }
 Write-Output 'Next: start Capture One through Start-CaptureOne.ps1, then run .\Run.ps1 context --compact.'

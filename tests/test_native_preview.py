@@ -124,7 +124,7 @@ class PreviewBackend:
 
 class NativePreviewTests(unittest.TestCase):
     def setUp(self):
-        self.temp = tempfile.TemporaryDirectory()
+        self.temp = tempfile.TemporaryDirectory(dir=Path(tempfile.gettempdir()).resolve())
         self.addCleanup(self.temp.cleanup)
         self.backend = PreviewBackend(self.temp.name)
         self.output_root = self.backend.state_dir / "export-slot"

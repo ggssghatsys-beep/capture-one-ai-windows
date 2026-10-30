@@ -47,10 +47,54 @@ def read(fields: list[str] | None = None, module: str | None = None,
 
 
 @mcp.tool()
-def adjust(target: dict[str, Any], module: str,
-           patch: dict[str, Any], observation_token: str,
-           request_id: str | None = None) -> dict[str, Any]:
+def adjust(target: dict[str, Any] | None = None, module: str | None = None,
+           patch: dict[str, Any] | None = None, observation_token: str | None = None,
+           request_id: str | None = None, batch: list[dict[str, Any]] | None = None) -> dict[str, Any]:
     """Apply one qualified numeric or structured module using its exact observed module token.
+
+    Mac also implements curves, levels, Basic/Advanced mixer and color balance on
+    registered Image and local-layer candidates. Check each capability's live qualification.
+    Local layers also support exposure, white balance and HDR. Select the exact
+    layer_ref, then read the desired module again. Layer opacity is an integer
+    1..100; disable with enabled=false. Reset/paste also work on local layers,
+    subject to module_actions qualification. Numeric paste rejects unset source
+    values and never converts null to zero. Paste copies parameters, not masks.
+    Mac paste supports numeric modules, curves, levels, color balance and the
+    complete Color Editor within the same instance, Session and processing engine.
+    Color Editor paste includes Skin Tone, requires complete saved snapshots and
+    nine explicit Basic sectors in the source. Mac reset writes measured
+    neutral values, not custom camera defaults; White Balance is excluded.
+    With the native Mac bridge, Color Editor Basic/Advanced/Skin share native model reads/writes; complete neutral reset includes Skin. Without it reset covers Basic/Advanced only.
+    For a Mac batch, omit single-edit fields and supply batch with 1..16 objects,
+    each containing target, module, patch, observation_token from prior candidate reads.
+    Items run serially, stop at the first failure and retain separate operation records.
+    The batch is not atomic and leaves selection on the last processed candidate.
+    Mac masks support qualified AI creation, fill at density=1, clear, copy and
+    Luma Range; first Luma write adds an Add submask, not an intersection.
+    Copy returns a new destination mask UUID: use the fresh returned layer_ref.
+    Use native preview to judge the edited photograph; a configured Mac bridge also returns kind=mask for whole-layer coverage.
+    A configured Mac bridge also handles create_subject/create_background,
+    invert, full fill and clear using the same actions. Invert/fill/clear require
+    whole-parent selection (-1). Composite/Luma parent inversion is refused; it
+    never silently inverts a child or rasterizes the result. Simple raster,
+    constant, linear and radial masks share invert. AI creation keeps C1 feature checks.
+    Mac also exposes clear_luma_range, feather and refine;
+    use capabilities for their supported mask types, ranges and live qualification.
+    With the matching bridge, Basic/Advanced/Skin, layer duplicate/move, mask
+    combine/combine_ai and submask selection/deletion run through native model
+    commands without visible tools or pointer input. Without a bridge, optional
+    explicitly enabled Mac AX adds Skin update of seven fields in one
+    existing range, combine_ai {mode:add|subtract|intersect,kind:subject|background},
+    select_submask {index} and delete_submask {index}. Skin controls or Layers must
+    be visible; expand the parent before selecting children. read(module) returns
+    module_capability with current availability; context skin_availability set to
+    requires_module_read means read color_mixer to check. Official native modules
+    remain independent of this UI option. A configured Mac native bridge creates
+    linear/radial gradients on empty adjustment layers or updates the geometry of
+    an existing same-type simple gradient, preserving layer UUID and adjustments,
+    using the same complete normalized RAW coordinate patch. Mac preview-to-RAW map_points is unavailable.
+    The broader structured routes below describe Windows; check
+    context.capabilities before requesting any operation on either platform.
 
     Structured modules: curves {channel,points:[[x,y],...]}; color_mixer
     {mode:'basic',color,hue?,saturation?,lightness?} or
@@ -86,7 +130,7 @@ def adjust(target: dict[str, Any], module: str,
     native ranges and indexes; no screenshot or UI color picking is required.
     """
     return _call("adjust", target=target, module=module, patch=patch,
-                 observation_token=observation_token, request_id=request_id)
+                 observation_token=observation_token, request_id=request_id, batch=batch)
 
 
 @mcp.tool()
@@ -101,6 +145,9 @@ def images(action: Literal["list", "create_candidate", "select", "next", "previo
 
     Follow next_offset with the same collection_token. next/previous follow the filtered collection.
     create_candidate clones the selected variant; edits remain restricted to registered copies.
+    Mac supports create_candidate and select by the observed integer variant_id; these
+    document/process-scoped script IDs are not UUIDs. Mac list pages the current
+    collection; next/previous use Capture One's official change-selection command.
     """
     return _call("images", action=action, target=target, observation_token=observation_token,
                  request_id=request_id, variant_id=variant_id, variant_uuid=variant_uuid, tool=tool,
@@ -115,13 +162,20 @@ def preview(target: dict[str, Any], observation_token: str,
             points: list[dict[str, float]] | None = None,
             direction: Literal['preview_to_raw','raw_to_preview'] = 'preview_to_raw',
             request_id: str | None = None) -> CallToolResult:
-    """Default native renders current C1 adjustments asynchronously, without export or focus.
+    """Windows default native renders current C1 adjustments without export or focus.
+
+    A configured Mac native bridge renders current C1 adjustments directly to PNG,
+    including kind=mask for the whole selected adjustment-layer composite, without
+    export or focus. It is version-qualified and never silently falls back on failure.
+    With no bridge configured, explicit Capture Pilot configuration remains a JPEG
+    whole-image source and stops/restores its temporary service after each call.
+    Mac map_points remains unavailable; gradient requests use normalized RAW coordinates.
 
     kind=mask renders the selected layer's whole composite mask. max_size is 128..1600.
     map_points maps {x,y} pixel-edge coordinates using C1's nonlinear transform; use the
     same kind/max_size and returned preview_id. Divide RAW x/y by raw_dimensions to make
     normalized gradient coordinates. A changed photo, layer or revision invalidates the id.
-    Only the most recent preview job is retained; eight PNG cache files are retained.
+    Windows retains only the most recent native preview job and eight PNG cache files.
     Legacy kind=render exports, kind=viewer/action=capture samples the display.
     """
     result = _call("preview", target=target, observation_token=observation_token,
@@ -177,10 +231,10 @@ def _preview_content(result: dict[str, Any]) -> CallToolResult:
     images = []
     artifact = result.get("result", {})
     if (result.get("status") == "completed" and isinstance(artifact, dict)
-            and artifact.get("source") in {"capture_one_export", "viewer_capture", "capture_one_native_render", "capture_one_native_mask"}):
+            and artifact.get("source") in {"capture_one_export", "viewer_capture", "capture_one_native_render", "capture_one_native_mask", "capture_one_pilot_render"}):
         try:
             path = Path(artifact["path"])
-            native=artifact['source'] in {'capture_one_native_render','capture_one_native_mask'}
+            native=artifact['source'] in {'capture_one_native_render','capture_one_native_mask','capture_one_pilot_render'}
             archive = (state_directory() / ('native-previews' if native else "renders" if artifact["source"] == "capture_one_export"
                                             else "viewer-captures")).resolve()
             if not path.resolve().is_relative_to(archive) or path.is_symlink():
@@ -191,9 +245,10 @@ def _preview_content(result: dict[str, Any]) -> CallToolResult:
             if hashlib.sha256(data).hexdigest() != artifact["image"]["sha256"]:
                 raise ValueError("Render changed after owner verification")
             if native:
+                image_format = 'jpeg' if artifact['source'] == 'capture_one_pilot_render' else 'png'
                 result['image_delivery']={'status':'available','source':artifact['source'],'path':str(path),
-                    'sha256':artifact['image']['sha256'],'format':'PNG','transform':'none'}
-                images.append(Image(data=data,format='png').to_image_content())
+                    'sha256':artifact['image']['sha256'],'format':image_format.upper(),'transform':'none'}
+                images.append(Image(data=data,format=image_format).to_image_content())
             else:
                 proxy, delivery = _analysis_proxy(data, artifact, archive)
                 result["image_delivery"] = delivery
@@ -217,6 +272,7 @@ def analyze_image(action: Literal['refresh','status','get','reference','clear_re
                   target: dict[str, Any] | None = None, roi: list[float] | None = None,
                   analysis_id: str | None = None, reference_id: str | None = None,
                   color_space: Literal['srgb','adobe_rgb','display_p3'] | None = None,
+                  precision: Literal['exact','display'] = 'exact',
                   view: Literal['waveform','parade','histogram','vectorscope'] | None = None,
                   include_vectorscope: bool = False,
                   analysis_scope: Literal['image','active_layer'] | None = None,
@@ -231,7 +287,10 @@ def analyze_image(action: Literal['refresh','status','get','reference','clear_re
     Read freshness.state: stale/waiting/failed must not be treated as current adjustments.
     analysis_id binds all numbers and optional image to one snapshot. reference pins an existing
     ID; compare via reference_id on refresh/get. Same photo/crop/policy/ROI required.
-    get retrieves a window-created ID; status checks revision without rendering. Histograms are
+    precision=exact (default) uses up to 1600 pixels per edge. The live window uses display
+    samples up to 640 pixels. To get a window ID pass precision=display explicitly; get never
+    upgrades its pixels. Refresh with precision=exact for a separate detailed snapshot.
+    status checks revision without rendering. Histograms are
     opt-in exact bin counts. First version uses 8-bit previews and explicit ICC assumptions;
     near-white ratios do not diagnose recoverability of RAW highlights. Native reads preserve
     existing instance/document/variant/layer checks. This tool never edits or exports photos.
@@ -252,7 +311,7 @@ def analyze_image(action: Literal['refresh','status','get','reference','clear_re
         try:
             root=(state_directory()/'analysis').resolve()
             file=Path(artifact['path'])
-            if file.is_symlink() or file.resolve().parent!=root:
+            if file.is_symlink() or file.resolve().parent not in {root,root/'display'}:
                 raise ValueError('Analysis artifact is outside its cache')
             data=file.read_bytes()
             if hashlib.sha256(data).hexdigest()!=artifact['sha256']:

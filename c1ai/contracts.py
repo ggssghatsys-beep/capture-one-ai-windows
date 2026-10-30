@@ -137,14 +137,19 @@ def validate_structured_patch(request):
         if action=='move' and (type(patch['index']) is not int or patch['index']<0):raise Refused('invalid_patch','Use a zero-based adjustment-layer index')
     else:
         action=patch.get('action')
-        required={'create_subject':set(),'create_background':set(),'invert':set(),'clear':set(),
-            'fill':{'density'},'copy':{'source_layer'},'combine':{'source_layer','mode'},'feather':{'radius'},
+        required={'create_subject':set(),'create_background':set(),'invert':set(),'clear':set(),'clear_luma_range':set(),
+            'fill':{'density'},'copy':{'source_layer'},'combine':{'source_layer','mode'},
+            'combine_ai':{'mode','kind'},'delete_submask':{'index'},'feather':{'radius'},'refine':{'radius'},
             'linear_gradient':{'start','stop','midpoint'},'radial_gradient':{'center','radius_x','radius_y','falloff','angle','inverted'},
             'luma_range':{'shadow','shadow_falloff','highlight','highlight_falloff','radius','sensitivity','inverted'},'select_submask':{'index'}}
         if action not in required:raise Refused('invalid_patch','Unsupported native mask action')
-        keys({'action'}|required[action])
+        keys({'action'}|required[action], {'coordinate_space'} if action in {'linear_gradient','radial_gradient'} else ())
+        if 'coordinate_space' in patch and patch['coordinate_space'] not in {'raw','viewer'}:
+            raise Refused('invalid_patch','Gradient coordinate_space must be raw or viewer')
         if 'source_layer' in patch:layer_ref(patch['source_layer'])
-        if action=='combine' and patch['mode'] not in {'add','subtract','intersect'}:raise Refused('invalid_patch','Use add/subtract/intersect')
+        if action in {'combine','combine_ai'} and patch['mode'] not in {'add','subtract','intersect'}:raise Refused('invalid_patch','Use add/subtract/intersect')
+        if action=='combine_ai' and patch['kind'] not in {'subject','background'}:raise Refused('invalid_patch','Use subject/background')
+        if action=='delete_submask' and (type(patch['index']) is not int or patch['index']<0):raise Refused('invalid_patch','Use a current zero-based child index')
         if 'radius' in patch:number(patch['radius'],0,300)
         if 'density' in patch:number(patch['density'],0,1)
         if 'inverted' in patch and type(patch['inverted']) is not bool:raise Refused('invalid_patch','inverted must be boolean')

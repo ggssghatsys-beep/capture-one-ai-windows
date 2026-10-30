@@ -23,10 +23,11 @@ async def check(require_live=False):
             assert {t.name for t in tools.tools} == {'context', 'images', 'read', 'adjust', 'preview', 'operations', 'analyze_image'}
             assert initialization.instructions
             context = data(await session.call_tool('context', {}))
+            # An original photo can be readable while correctly not writable.
             if context.get('error', {}).get('code') == 'APP_INSTANCE_REQUIRED' or (
-                    context.get('status') == 'ok' and not context.get('editing_ready')):
+                    context.get('status') == 'ok' and not isinstance(context.get('target'), dict)):
                 if require_live:
-                    raise RuntimeError(context.get('error'))
+                    raise RuntimeError(context.get('error') or context.get('connection_error') or context.get('reason'))
                 print(json.dumps({'status': 'passed_transport', 'tools': 7,
                     'live_preview': 'skipped', 'reason': context.get('error', {}).get('code'),
                     'photo_writes': 0}))

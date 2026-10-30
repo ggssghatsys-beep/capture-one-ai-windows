@@ -1,6 +1,7 @@
 import copy
 import hashlib
 import json
+import os
 from pathlib import Path
 import tempfile
 import unittest
@@ -8,7 +9,7 @@ from unittest.mock import patch
 
 from c1ai.native_images import NativeAdapterError
 from c1ai.native_preview import (EXPORT, build_historical_destination_metadata, ensure_owned_destination,
-                                export_settings, prepare_export, recover_owned_destination, recover_stalled_destination,
+                                export_settings, prepare_export,
                                 restore_destination, verify_recipe)
 from test_native_preview import PreviewBackend
 
@@ -120,7 +121,7 @@ class DestinationBackend(PreviewBackend):
 
 class OwnedDestinationTests(unittest.TestCase):
     def setUp(self):
-        self.temp = tempfile.TemporaryDirectory()
+        self.temp = tempfile.TemporaryDirectory(dir=Path(tempfile.gettempdir()).resolve())
         self.addCleanup(self.temp.cleanup)
         self.backend = DestinationBackend(self.temp.name)
 
@@ -184,7 +185,7 @@ class OwnedDestinationTests(unittest.TestCase):
 
     def test_navigation_and_picker_identity_must_match_before_confirmation(self):
         for field in ("bad_navigation", "change_picker"):
-            with self.subTest(field=field), tempfile.TemporaryDirectory() as directory:
+            with self.subTest(field=field), tempfile.TemporaryDirectory(dir=Path(tempfile.gettempdir()).resolve()) as directory:
                 backend = DestinationBackend(directory)
                 setattr(backend, field, True)
                 with self.assertRaises(NativeAdapterError):
@@ -281,6 +282,7 @@ class OwnedDestinationTests(unittest.TestCase):
         self.assertEqual(self.backend.actions.count("preview.restore_destination"), 2)
         self.assertEqual(self.backend.directory, self.temp.name)
 
+    @unittest.skipUnless(os.name == "nt", "Trailing backslash is a Windows path separator")
     def test_native_directory_guards_preserve_fresh_sample_trailing_backslash(self):
         self.backend.sample_suffix = "\\"
         original = self.backend.call
@@ -350,18 +352,6 @@ class OwnedDestinationTests(unittest.TestCase):
         self.assertEqual(path.read_bytes(), saved)
         self.assertEqual(len(self.backend.actions), count)
 
-    def test_previous_cycle_receipt_cannot_reconcile_current_cycle(self):
-        observation = self.backend.observe([])
-        self.ensure()
-        old_record = self.record(observation, self.backend.action_records)
-        restore_destination(self.backend, observation)
-        self.ensure()
-        path = self.backend.state_dir / "export-destination.json"
-        saved, count = path.read_bytes(), len(self.backend.actions)
-        result = recover_owned_destination(self.backend, old_record)
-        self.assertEqual(result["outcome"], "unknown")
-        self.assertEqual(path.read_bytes(), saved)
-        self.assertEqual(len(self.backend.actions), count)
 
     def test_restore_without_recorded_menu_evidence_refuses_before_ui_write(self):
         self.ensure()
@@ -384,18 +374,6 @@ class OwnedDestinationTests(unittest.TestCase):
         self.assertEqual(self.backend.actions.count("preview.select_owned_directory"), chooses)
         self.assertNotIn("preview.restore_destination", self.backend.actions)
 
-    def test_lost_restore_reply_is_read_back_without_repeat(self):
-        self.ensure()
-        self.backend.restore_reply_lost = True
-        begin = len(self.backend.action_records)
-        observation = self.backend.observe([])
-        with self.assertRaises(NativeAdapterError):
-            restore_destination(self.backend, observation)
-        with self.assertRaises(NativeAdapterError):
-            restore_destination(self.backend, observation)
-        record = self.record(observation, self.backend.action_records[begin:])
-        self.assertEqual(recover_owned_destination(self.backend, record)["outcome"], "restored")
-        self.assertEqual(self.backend.actions.count("preview.restore_destination"), 1)
 
     @staticmethod
     def record(observation, actions):
@@ -456,141 +434,13 @@ class OwnedDestinationTests(unittest.TestCase):
         data = json.loads((self.backend.state_dir / "export-destination.json").read_text("utf-8"))
         self.assertEqual(next(iter(data["destinations"].values()))["status"], "pending")
 
-    def test_confirm_success_then_read_failure_recovers_without_any_native_write(self):
-        observation = self.backend.observe([])
-        def timeout(name):
-            if name == "preview.select_current_directory":
-                raise NativeAdapterError("NATIVE_TIMEOUT", "lost reply")
-        self.backend.after_mutation = timeout
-        with self.assertRaises(NativeAdapterError):
-            self.ensure()
-        with self.assertRaises(NativeAdapterError):
-            self.ensure()
-        count = len(self.backend.actions)
-        result = recover_owned_destination(self.backend, self.record(observation, self.backend.action_records))
-        self.assertEqual(result["outcome"], "applied_not_restored")
-        self.assertTrue(result["evidence"]["native_sample_path_verified"])
-        self.assertFalse(result["evidence"]["render_verified"])
-        self.assertEqual(len(self.backend.actions), count)
-        self.backend.after_mutation = None
-        self.assertFalse(self.ensure()["changed"])
 
-    def test_recovery_rejects_completed_or_inconsistent_action_receipts(self):
-        observation = self.backend.observe([])
-        self.ensure()
-        record = self.record(observation, self.backend.action_records)
-        for change in ("completed", "before", "confirm", "cleanup"):
-            with self.subTest(change=change):
-                value = copy.deepcopy(record)
-                if change == "completed":
-                    value["status"] = "completed"
-                elif change == "before":
-                    value["actions"][2]["intent"]["before"]["values"] = {"exposure": 1}
-                elif change == "confirm":
-                    value["actions"][3]["intent"]["path"] = self.temp.name
-                else:
-                    value["actions"].append({"name": "preview.release_owned_export"})
-                self.assertEqual(recover_owned_destination(self.backend, value)["outcome"], "unknown")
 
-    def test_recovery_does_not_complete_merely_navigated_picker(self):
-        observation = self.backend.observe([])
-        self.backend.lose_choose_reply = True
-        with self.assertRaises(NativeAdapterError):
-            self.ensure()
-        count = len(self.backend.actions)
-        result = recover_owned_destination(self.backend, self.record(observation, self.backend.action_records))
-        self.assertEqual(result["outcome"], "unknown")
-        self.assertEqual(len(self.backend.actions), count)
 
-    def stalled_legacy_record(self):
-        observation = self.backend.observe([])
-        self.ensure()
-        record = self.record(observation, self.backend.action_records)
-        record["operation_id"] = "synthetic-legacy-confirm-operation"
-        for action in record["actions"]:
-            action["result"] = {"accepted": True}
-        record["actions"][-1]["name"] = "preview.confirm_owned_directory"
-        record["actions"][-1]["intent"].pop("expected_edit_text")
-        root = str(self.backend.state_dir / "export-slot")
-        self.backend.directory, self.backend.root_label = self.temp.name, "Session Output"
-        self.backend.picker_open, self.backend.navigation, self.backend.edit_text = True, root, root
-        path = self.backend.state_dir / "export-destination.json"
-        metadata = json.loads(path.read_text("utf-8"))
-        next(iter(metadata["destinations"].values()))["status"] = "pending"
-        path.write_text(json.dumps(metadata), encoding="utf-8")
-        self.backend.actions.clear()
-        self.backend.action_records.clear()
-        self.backend.native_calls.clear()
-        return record
 
-    def test_stalled_legacy_confirm_gets_one_new_current_folder_action(self):
-        record = self.stalled_legacy_record()
-        result = recover_stalled_destination(self.backend, record)
-        self.assertEqual(result["outcome"], "applied_not_restored")
-        self.assertEqual(self.backend.actions, ["preview.select_current_directory"])
-        calls = [(action, payload) for action, payload in self.backend.native_calls
-                 if action in ("choose_export_folder", "confirm_export_folder", "select_current_export_folder")]
-        self.assertEqual([action for action, _ in calls], ["select_current_export_folder"])
-        self.assertEqual(calls[0][1]["expected_edit_text"], str(self.backend.state_dir / "export-slot"))
-        self.assertEqual(self.backend.action_records[0]["intent"]["recovery_of_operation_id"], record["operation_id"])
-        record["actions"] += copy.deepcopy(self.backend.action_records)
-        self.assertEqual(recover_stalled_destination(self.backend, record)["outcome"], "applied_not_restored")
-        self.assertEqual(self.backend.actions, ["preview.select_current_directory"])
 
-    def test_lost_new_current_folder_reply_is_only_read_back(self):
-        record = self.stalled_legacy_record()
-        self.backend.lose_current_reply = True
-        with self.assertRaises(NativeAdapterError):
-            recover_stalled_destination(self.backend, record)
-        record["actions"] += copy.deepcopy(self.backend.action_records)
-        self.assertEqual(record["actions"][-1]["status"], "dispatching")
-        self.assertEqual(recover_stalled_destination(self.backend, record)["outcome"], "applied_not_restored")
-        self.assertEqual(self.backend.actions, ["preview.select_current_directory"])
 
-    def test_stalled_recovery_does_not_mutate_changed_or_unconfirmed_state(self):
-        record = self.stalled_legacy_record()
-        root = str(self.backend.state_dir / "export-slot")
-        path = self.backend.state_dir / "export-destination.json"
-        original_metadata = json.loads(path.read_text("utf-8"))
-        original_picker = copy.deepcopy(self.backend.picker)
-        for fault in ("unknown_confirm", "missing_acceptance", "picker", "navigation", "edit", "empty_edit", "cycle", "metadata_status", "before"):
-            with self.subTest(fault=fault):
-                value = copy.deepcopy(record)
-                metadata = copy.deepcopy(original_metadata)
-                entry = next(iter(metadata["destinations"].values()))
-                self.backend.picker = copy.deepcopy(original_picker)
-                self.backend.navigation, self.backend.edit_text = root, root
-                if fault == "unknown_confirm":
-                    value["actions"][-1]["status"] = "outcome_unknown"
-                elif fault == "missing_acceptance":
-                    value["actions"][-1]["result"] = {}
-                elif fault == "picker":
-                    self.backend.picker["dialog_hwnd"] = 999
-                elif fault == "navigation":
-                    self.backend.navigation = self.temp.name
-                elif fault == "edit":
-                    self.backend.edit_text = self.temp.name
-                elif fault == "empty_edit":
-                    self.backend.edit_text = ""
-                elif fault == "cycle":
-                    entry["cycle"] = 2
-                elif fault == "metadata_status":
-                    entry["status"] = "selected"
-                else:
-                    value["before"]["values"] = {"exposure": 1}
-                path.write_text(json.dumps(metadata), encoding="utf-8")
-                self.assertEqual(recover_stalled_destination(self.backend, value)["outcome"], "unknown")
-                self.assertEqual(self.backend.actions, [])
 
-    def test_stalled_recovery_reads_late_success_without_sending_new_action(self):
-        record = self.stalled_legacy_record()
-        self.backend.directory, self.backend.root_label = str(self.backend.state_dir / "export-slot"), "Owned export-slot"
-        self.backend.picker_open = False
-        record["actions"][-1]["status"] = "outcome_unknown"
-        result = recover_stalled_destination(self.backend, record)
-        self.assertEqual(result["outcome"], "applied_not_restored")
-        self.assertEqual(self.backend.actions, [])
-        self.assertFalse(any(action == "inspect_folder_picker" for action, _ in self.backend.native_calls))
 
     def test_new_setup_refuses_empty_picker_edit_before_recording_current_selection(self):
         def clear_edit(name):

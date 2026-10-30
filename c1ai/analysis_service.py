@@ -10,7 +10,7 @@ import uuid
 
 from .analysis_sources import NativeSource, FileSource
 from .contracts import digest
-from .image_analysis import POLICY, COLOR_SPACES, policy_for, decode, analyze, compare, scope_image, roi_bounds, region_metadata, apply_mask
+from .image_analysis import COLOR_SPACES, PRECISION_EDGES, policy_for, decode, analyze, compare, scope_image, roi_bounds, region_metadata, apply_mask
 
 
 def failure_details(error):
@@ -19,18 +19,23 @@ def failure_details(error):
     nested=details.get('error',{}) if isinstance(details,dict) else {}
     message=nested.get('message') or str(error)
     message=str(message).splitlines()[0]  # Avoid returning a full CLR stack for routine changes.
-    transient=any(text in message for text in (
+    transient=getattr(error,'code',None) in {'bridge_request_pending','native_render_pending','bridge_response_pending'} or any(text in message for text in (
         'native preview still rendering; poll its id before starting another',
         'preview target or adjustments changed; render again','preview expired; render again',
-        'Native renderer has not completed the observed revision','C1 is still rendering'))
+        'Native renderer has not completed the observed revision','C1 is still rendering',
+        'analysis requires exactly one selected variant','native value unavailable: primaryVariant',
+        'Viewer cache changed','Viewer cache identity changed','Native display target changed','Native preview revision changed'))
     return {'error':message,'error_code':getattr(error,'code',None),
             **({'retry_after_ms':50} if transient else {})}
 
 
 class AnalysisService:
-    def __init__(self, backend, root):
+    def __init__(self, backend, root, namespace=None):
         self.backend = backend
         self.root = Path(root)/'analysis'
+        if namespace is not None:
+            if namespace != 'display':raise ValueError('Unsupported analysis cache namespace')
+            self.root /= namespace
         self.root.mkdir(parents=True,exist_ok=True)
         self.records = OrderedDict()
         self.latest = {}
@@ -44,13 +49,19 @@ class AnalysisService:
         if request.get('source','native') == 'native':
             if request.get('path'):
                 raise ValueError('Native source does not accept a file path')
-            return NativeSource(self.backend,scope)
+            return NativeSource(self.backend,scope,request.get('precision') or 'exact')
         if request.get('source') == 'file' and isinstance(request.get('path'),str):
             if scope!='image':raise ValueError('File source has no C1 layer mask')
             return FileSource(request['path'])
         raise ValueError('Use source native, or source file with path')
 
     def dispatch(self, request, check_target):
+        started=time.monotonic()
+        response=self._dispatch(request,check_target)
+        response['request_elapsed_seconds']=round(time.monotonic()-started,4)
+        return response
+
+    def _dispatch(self, request, check_target):
         action = request.get('action','refresh')
         if action not in {'refresh','status','get','reference','clear_reference'}:
             raise ValueError('Unknown analysis action')
@@ -60,6 +71,8 @@ class AnalysisService:
         roi=[float(v) for v in (roi if roi is not None else [0,0,1,1])]
         space=request.get('color_space') or 'srgb'
         if space not in COLOR_SPACES:raise ValueError('Unsupported analysis color space')
+        precision=request.get('precision') or 'exact'
+        if precision not in PRECISION_EDGES:raise ValueError('Use precision display or exact')
         image = request.get('include_image','none')
         if 'include_statistics' in request and not isinstance(request['include_statistics'],bool):
             raise ValueError('include_statistics must be boolean')
@@ -73,6 +86,8 @@ class AnalysisService:
             if analysis_id not in self.records:
                 raise ValueError('Unknown or expired analysis_id; refresh to capture a new result')
             record = self.records[analysis_id]
+            if request.get('precision') is not None and precision!=record['result']['precision']:
+                raise ValueError('Saved analysis has a fixed precision; refresh for another precision')
             if request.get('color_space') and space!=record['pixels'].space:
                 raise ValueError('Saved analysis has a fixed color space; refresh for another space')
             if request.get('roi') is not None and roi != record['result']['region']['roi_normalized']:
@@ -86,7 +101,7 @@ class AnalysisService:
             source = self._source(record['request'])
         else:
             source = self._source(request)
-            slot = digest([source.name,str(getattr(source,'path','')),roi,space,request.get('analysis_scope','image')])
+            slot = digest([source.name,str(getattr(source,'path','')),roi,space,request.get('analysis_scope','image'),precision])
             record = self.records.get(self.latest.get(slot))
         try:
             stamp = source.observe()
@@ -106,15 +121,17 @@ class AnalysisService:
                     and request.get('include_statistics') is False and not request.get('reference_id')
                     and request.get('include_image','none') in record['artifacts']):
                 return {'status':'ok','unchanged':True,'analysis_id':record['result']['analysis_id'],
+                        'precision':record['result']['precision'],
                         'freshness':{'state':'ready','checked_at_unix':time.time()},'current_target':stamp['target']}
             return self._response(record,'ready',request,current_target=stamp['target'])
         start=time.monotonic()
         try:
             data,meta=source.acquire(stamp)
             acquired=time.monotonic()
-            pixels=decode(data,space,raw=meta.get('pixel_buffer'))
+            pixels=decode(data,space,raw=meta.get('pixel_buffer'),precision=precision)
             if '_mask_data' in meta:
-                pixels=apply_mask(pixels,meta.pop('_mask_data'),meta.pop('_mask_geometry'),meta['geometry'])
+                pixels=apply_mask(pixels,meta.pop('_mask_data'),meta.pop('_mask_geometry'),meta['geometry'],
+                                  raw=meta.pop('_mask_pixel_buffer',None))
             decoded=time.monotonic()
             region=region_metadata(pixels,roi)
             analyzed=time.monotonic()
@@ -124,17 +141,20 @@ class AnalysisService:
                 return self._response(record,'stale' if record else 'waiting',request,
                                       current_target=after['target'],error='Selection or revision changed; late image discarded')
             analysis_id=uuid.uuid4().hex
-            policy=policy_for(space)
+            policy=policy_for(space,precision)
             if pixels.mask_weights is not None:
                 policy={**policy,'mask_weighting':'native grayscale coverage / 255',
                         'percentile_method':'weighted inverse CDF',
                         'scope_renderer':'coverage-weighted positional density; shared histogram and chroma counts'}
-            result={**meta,**pixels.metadata,'analysis_id':analysis_id,'policy':policy,
+            result={**meta,**pixels.metadata,'analysis_id':analysis_id,'policy':policy,'precision':precision,
+                    'sampling_note':('Quick display sample; refresh with precision=exact for detailed analysis'
+                                     if precision=='display' else 'Full analysis sample, at most 1600 pixels per edge; still an 8-bit preview'),
                     'region':region,'statistics_state':'not_requested','elapsed_seconds':round(time.monotonic()-start,4),
                     'timing_seconds':{'acquire':round(acquired-start,4),'decode':round(decoded-acquired,4),
                                       'region':round(analyzed-decoded,4),'statistics':0.0}}
             new={'result':result,'pixels':pixels,'stamp':stamp['key'],
-                 'request':{**{k:v for k,v in request.items() if k in {'source','path','analysis_scope'}},'roi':roi,'color_space':space},'artifacts':{}}
+                 'request':{**{k:v for k,v in request.items() if k in {'source','path','analysis_scope'}},
+                            'roi':roi,'color_space':space,'precision':precision},'artifacts':{}}
             self.records[analysis_id]=new
             self.latest[slot]=analysis_id
             self._prune()

@@ -1,6 +1,6 @@
 # macOS 开发交接
 
-更新：2026-10-29。**当前只有 Windows 实现；本文没有把任何 Mac 功能标为已完成。** 在装有 Capture One 的 Mac 上克隆此仓库即可接续开发，不需要迁移原开发者的聊天、照片或 Windows 运行状态。
+更新：2026-10-30。Mac 原生桥已接入公共接口：整图／灰度蒙版 PNG、RAW 线性／径向创建和已有简单渐变再编辑已通过代表性实机闭环。Basic／Advanced／Skin 共用后台原生色彩对象；图层复制／排序、蒙版组合／AI 组合和子项选择／删除也已有后台原生代表性实测。原有七个调色模块、Pilot、集合和受限批量继续保留。同仓库 0.3.0a3 的图像分析已复用到 Mac，波形／Parade／直方图／矢量图、ROI、参考和局部加权已实测。桥是版本绑定的内部接口，不是官方公开 SDK；现有发布包仍为 Windows。准确范围、启用方式和未验证项见 [MAC_STATUS](MAC_STATUS.md) 开头。
 
 ## 目标与启动方式
 
@@ -13,7 +13,7 @@ cd capture-one-ai-windows
 
 已有克隆先检查工作区，再拉取最新源码，不覆盖未提交修改。开发者自行建立工作分支；未取得推送授权时，只在本地提交或提供改动，不自动发布。
 
-此时**不要在 Mac 上执行 Install.ps1、Start-CaptureOne.ps1，也不要把 python -m c1ai 能安装视为已能控制 C1**。当前 owner、client、宿主后端和安装入口均有 Windows 依赖。先读根目录 [AGENTS.md](../AGENTS.md)，再完成下面的环境核查。
+此时**不要在 Mac 上执行 Install.ps1、Start-CaptureOne.ps1，也不要把 python -m c1ai 能安装视为已能控制 C1**。owner/client 已按平台分派；Mac 后端已有受保护的原生数值读写，原安装脚本仍为 Windows 专用。先读根目录 [AGENTS.md](../AGENTS.md)，再完成下面的环境核查。
 
 ## 先取得 Mac 本机事实
 
@@ -32,6 +32,10 @@ cd capture-one-ai-windows
 
 优先审查这些现成实现，避免重复摸索；实际复用前固定提交、核对许可证并保留版权说明。只借鉴思想时不复制代码或提示词。
 
+补查了多个 GitHub MCP／控制器项目及本机 Tangent 定义，固定提交和结论见 [MAC_STATUS 的研究记录](MAC_STATUS.md#github-实现与本机补查)。本机 16.8.6.25 的主体蒙版创建探针已通过原生回读和 C1 灰度查看；不能继承第三方旧版的创建限制，也不能因此跳过图层身份问题。目前已接入 context 的只读图层／亮度范围清单，并支持选中局部层时相邻切图；已进一步接入基于 Session 原生记录的多层选中／改名和七个局部调色模块；读写沿用官方 adjustments 对象，局部 reset/paste 已复用受保护的参数路径，代表性实测范围见 MAC_STATUS；已有源层的限定组合已接通，具体资格见 MAC_STATUS；Subject/Background 的可选 AX 组合范围见 MAC_STATUS。
+
+后续官方资料与 Luma Layers 源码补查见 [下一步路线](MAC_STATUS.md#官方接口补查与下一步路线)。后续已按用户要求转向可反复定位多个层的接口：C1 保存后只读 Session 原生层记录，与实时脚本清单对齐，写入仍走 Apple Events；不是原子 GUID 锁定，不支持并发层结构改动。亮度范围必须连同基础蒙版与实际覆盖一起验证。
+
 ## 哪些代码复用，哪些需要适配
 
 | 位置 | 当前职责 | Mac 迁移要点 |
@@ -40,14 +44,14 @@ cd capture-one-ai-windows
 | c1ai/contracts.py、guidance.py、formatting.py | 请求校验、单位、AI 流程、结果输出 | 优先复用；Windows 得出的数值范围要与 Mac 字典核对，不能直接当作 Mac 证据 |
 | c1ai/core.py | 统一分派、目标检查、写入记录 | 保留流程；检查隐含的 Windows 身份和证据字段假设 |
 | c1ai/journal.py | SQLite 操作与观察记录 | 可复用主体逻辑；状态目录和 scope 的反斜杠／casefold 规则需平台化，Mac 路径不能无条件套 Windows 大小写语义 |
-| c1ai/client.py、owner.py | 本机通信、单实例、后台进程 | 当前依赖 Win32 命名管道、SID、互斥锁和进程标志，需要 Mac 实现；不要让公共导入直接触发 Windows 专用调用 |
+| c1ai/client.py、owner.py、macos_ipc.py | 本机通信、单实例、后台进程 | Windows 保留命名管道；Mac 当前用户 Unix socket 已接入，共用 Core 和日志 |
 | c1ai/windows_backend.py、internal_transport.py | Windows 宿主读写入口 | 保留 Windows 路线；新增 Mac 后端并按平台选择，禁止把两套宿主逻辑混在每个参数分支里 |
 | internal/StartupHook.cs、NativeEngine.cs | Windows .NET 内部桥 | 不直接移植或在 Mac 加载该 DLL；Mac 先走官方 Apple Events 自动化 |
 | c1ai/native_*.py | 模块编码、图层、兼容路径 | 逐文件审查后选择性复用；含 Windows／持久化格式假设，不能整目录当跨平台代码 |
 | c1ai/model_preview.py | Windows 内部渲染与状态绑定 | 复用结果语义和过期判断，Mac 图像来源单独接通 |
 | Install.ps1、Start-CaptureOne.ps1、scripts/configure.py | Windows 安装与本机配置 | 保留；Mac 新增自己的安装／权限说明，不修改原 Windows 资格档案来假装跨平台 |
 
-建议仍为 `MCP / CLI → 同一 Core → 平台后端 → C1`。通信和运行目录只做必要平台分离，不先设计通用插件系统。可评估当前用户专属 Unix domain socket；它是设计候选，不是已存在的实现。无论采用什么方式，保留单个串行写入者、当前用户访问限制、请求编号及结果查询。
+保持 `MCP / CLI → 同一 Core → 平台后端 → C1`。通信和运行目录只做必要平台分离，不先设计通用插件系统。Mac 当前已采用用户专属 Unix domain socket，编辑／精确分析保留单个串行执行器，快速窗口读取另有一个有界只读队列；当前用户访问限制、请求编号及结果查询保持。两条队列共用宿主目标与渲染锁，显示读取不发写入凭据；照片写入资格单独由实测版本、登记候选和能力表决定。
 
 ## 实施顺序与验收
 
@@ -79,7 +83,7 @@ cd capture-one-ai-windows
 
 每项只记录必要信息：机器架构／系统／C1 构建号、具体原生入口、读写和预览结果、是否用到前台、限制和对应提交。原照片、路径、令牌和操作数据库留在本机，不上传。导出耗时或预览速度只报告实际测量条件，不能复用 Windows 的性能数字。
 
-当前进度：Windows 基线已发布；Mac 研究与迁移说明已准备；Mac 后端、安装程序和实机验证均未开始。下一位开发者的第一项任务是 **Mac 版本／字典核查和只读连通性**。
+当前进度以 [MAC_STATUS](MAC_STATUS.md) 开头为准。Apple Events 继续负责已公开的调色读写；原生桥负责 PNG 渲染、渐变几何，以及已验证的主体／背景创建、简单父蒙版反相、整父填满／清空。新图像分析复用同一算法和公共 `analyze_image`，不同平台只适配像素来源。不要将旧历史研究状态、Windows 安装包或其他平台实测自动套用到 Mac。
 
 ## 可直接交给 Mac 上开发 AI 的任务
 

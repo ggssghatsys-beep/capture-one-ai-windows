@@ -52,6 +52,20 @@ class FakeBackend:
             raise TimeoutError("lost response after write")
         return {"accepted": True, "control_readback": value}
 
+    def set_values(self, values, expected_observation):
+        # Core dispatches one native batch. Per-field calls only model the
+        # synthetic setter's internal progress and injected failure points.
+        changed = False
+        for field, value in values.items():
+            try:
+                self.set_value(field, value, expected_observation)
+            except Exception as error:
+                if changed and getattr(error, "dispatched", None) is False:
+                    error.dispatched = True
+                raise
+            changed = True
+        return {"accepted": True, "control_readback": dict(values)}
+
     def image_action(self, action, request, observation):
         if action == "list":
             return {"images": [copy.deepcopy(self.target)]}
@@ -136,6 +150,39 @@ class CoreTests(unittest.TestCase):
                 "module": module, "patch": patch_values or {"exposure": 1},
                 "observation_token": observation["observation_token"]}
 
+    def test_bundled_native_readback_does_not_hide_unrequested_module_change(self):
+        def set_values(patch_values, observation):
+            self.backend.values.update(patch_values)
+            self.backend.values['contrast'] = 9  # An unintended native side effect.
+            after = self.backend.observe(list(observation['values']))
+            after['evidence']['model_verified'] = True
+            return {'status': 'completed', 'model_verified': True, 'observation': after}
+        self.backend.set_values = set_values
+        result = self.core.dispatch(self.request({'exposure': 1}))
+        self.assertEqual(result['status'], 'partial')
+        self.assertEqual(result['error']['code'], 'native_readback_mismatch')
+        self.assertFalse(result['model_verified'])
+
+    def test_platform_without_module_actions_refuses_before_native_work(self):
+        self.backend.module_actions_supported = False
+        self.backend.observe = Mock(side_effect=AssertionError('Must refuse before native read/write'))
+        result = self.core.dispatch({'command': 'adjust', 'module': 'exposure',
+                                     'patch': {'action': 'reset'}, 'request_id': 'unsupported-reset'})
+        self.assertEqual(result['status'], 'refused')
+        self.assertEqual(result['error']['code'], 'unsupported')
+
+    def test_module_action_uses_platform_adapter_without_windows_import(self):
+        observed = self.core.dispatch({'command': 'read', 'module': 'exposure'})
+        self.backend.apply_module_action = Mock(return_value={
+            'status': 'control_confirmed', 'requested_result_verified': True,
+            'after': observed, 'evidence': {'model_verified': True}})
+        with patch('c1ai.native_modules.apply_module_action', side_effect=AssertionError('Wrong platform')):
+            result = self.core.dispatch({'command': 'adjust', 'module': 'exposure',
+                'patch': {'action': 'reset'}, 'target': observed['target'],
+                'observation_token': observed['observation_token'], 'request_id': 'platform-reset'})
+        self.assertEqual(result['status'], 'control_confirmed')
+        self.backend.apply_module_action.assert_called_once()
+
     def pending_preview(self):
         def open_then_fail(request, observation):
             self.backend.action_hook("preview.open_export", lambda: {"accepted": True})
@@ -145,16 +192,13 @@ class CoreTests(unittest.TestCase):
         return self.core.dispatch({"command": "preview", "request_id": "pending-preview",
                                    "target": observation["target"], "observation_token": observation["observation_token"]})
 
-    def recovery_result(self):
-        return {"outcome": "applied_not_restored", "target": copy.deepcopy(self.backend.target),
-                "evidence": {"scope": "fixed_destination_confirmation", "path_verified": True}}
 
     def test_control_receipt_is_not_model_verification(self):
         self.backend.assert_writeahead = True
         result = self.core.dispatch(self.request({"exposure": 1, "contrast": 2}))
         self.assertEqual(result["status"], "control_confirmed")
         self.assertFalse(result["model_verified"])
-        self.assertEqual(len(result["actions"]), 2)
+        self.assertEqual([a["name"] for a in result["actions"]], ["parameters.set"])
         self.assertEqual(result["after"]["values"]["exposure"], 1)
 
     def test_same_request_returns_record_without_replaying(self):
@@ -319,7 +363,7 @@ class CoreTests(unittest.TestCase):
 
     def test_restore_destination_uses_target_token_and_durable_action(self):
         request = self.request()
-        request.update(command="preview", action="restore_destination")
+        request.update(command="preview", kind="render", action="restore_destination")
         dispatched = []
         def restore(request, before):
             self.backend.action_hook("preview.restore_destination", lambda: dispatched.append(True),
@@ -336,20 +380,24 @@ class CoreTests(unittest.TestCase):
         self.assertTrue(self.core.dispatch(request)["existing"])
         self.assertEqual(len(dispatched), 1)
 
-    def test_existing_historical_configuration_can_be_read_and_recovered_without_new_call(self):
+    def test_historical_configuration_is_readable_but_recovery_never_dispatches(self):
         request = self.request()
-        request.update(command="preview", action="configure_owned_destination")
+        request.update(command="preview", kind="render", action="configure_owned_destination")
         observation = self.core.journal.observation(request["observation_token"])
         record, _ = self.core.journal.begin(request, observation["target"], observation)
         self.core.journal.update(record["operation_id"], status="partial")
         self.backend.preview = Mock(side_effect=AssertionError("Historical operation must not be replayed"))
-        duplicate = self.core.dispatch(request)
-        self.assertTrue(duplicate["existing"])
-        self.assertEqual(duplicate["operation_id"], record["operation_id"])
-        self.backend.recover = Mock(return_value=self.recovery_result())
-        output = self.core.dispatch({"command": "operations", "action": "recover", "operation_id": record["operation_id"]})
-        self.assertEqual(output["status"], "applied_not_restored")
+        self.backend.recover = Mock(side_effect=AssertionError("Recovery is retired"))
+        before = self.core.journal.get(operation_id=record["operation_id"])
+        self.assertTrue(self.core.dispatch(request)["existing"])
+        current = self.core.dispatch({"command":"operations", "action":"get", "operation_id":record["operation_id"]})
+        self.assertEqual(current["operation_id"],record["operation_id"])
+        for action in ("restore","recover"):
+            output = self.core.dispatch({"command":"operations", "action":action, "operation_id":record["operation_id"]})
+            self.assertEqual(output["error"]["code"],"unsupported")
+        self.assertEqual(self.core.journal.get(operation_id=record["operation_id"]),before)
         self.backend.preview.assert_not_called()
+        self.backend.recover.assert_not_called()
 
     def test_invalid_backend_result_never_becomes_completed_after_side_effect(self):
         for index, invalid in enumerate((None, {"status": "failed"}, {"path": "not-an-explicit-success"}, {"status": True})):
@@ -401,67 +449,9 @@ class CoreTests(unittest.TestCase):
         self.assertEqual(output["status"], "partial")
         self.assertEqual(output["error"]["code"], "invalid_backend_result")
 
-    def test_restore_refuses_unqualified_backend(self):
-        result = self.core.dispatch(self.request())
-        original = self.backend.context
-        def unqualified():
-            context = original()
-            context["capabilities"]["fields"]["exposure"]["writable"] = False
-            return context
-        self.backend.context = unqualified
-        output = self.core.dispatch({"command": "operations", "action": "restore", "operation_id": result["operation_id"]})
-        self.assertEqual(output["error"]["code"], "unsupported")
-        self.assertEqual(self.backend.values["exposure"], 1)
 
-    def test_restore_timeout_after_effect_can_reconcile_without_replaying_that_field(self):
-        from c1ai.native_reconcile import reconcile
-        self.backend.reconcile = lambda record: reconcile(self.backend, record)
-        applied = self.core.dispatch(self.request({"exposure": 1, "contrast": 2}))
-        self.backend.fail_field, self.backend.fail_after_write = "contrast", True
-        request = {"command": "operations", "operation_id": applied["operation_id"]}
-        first = self.core.dispatch({**request, "action": "restore"})
-        self.assertEqual(first["status"], "outcome_unknown")
-        self.assertEqual(self.backend.values["contrast"], 0)
-        reconciled = self.core.dispatch({**request, "action": "reconcile"})
-        self.assertEqual(reconciled["status"], "partial")
-        self.backend.fail_field = None
-        restored = self.core.dispatch({**request, "action": "restore"})
-        self.assertEqual(restored["status"], "restored")
-        self.assertEqual(restored["operation_id"], applied["operation_id"])
-        self.assertEqual(self.backend.calls.count(("contrast", 0)), 1)
-        self.assertEqual(self.backend.calls.count(("exposure", 0)), 1)
 
-    def test_reconciliation_cannot_authorize_replaying_an_unknown_restore(self):
-        from c1ai.native_reconcile import reconcile
-        self.backend.reconcile = lambda record: reconcile(self.backend, record)
-        applied = self.core.dispatch(self.request({"exposure": 1, "contrast": 2}))
-        self.backend.fail_field = "contrast"
-        request = {"command": "operations", "operation_id": applied["operation_id"]}
-        self.core.dispatch({**request, "action": "restore"})
-        self.core.dispatch({**request, "action": "reconcile"})
-        self.backend.fail_field = None
-        blocked = self.core.dispatch({**request, "action": "restore"})
-        self.assertEqual(blocked["error"]["code"], "restore_action_unresolved")
-        self.assertEqual(blocked["status"], "outcome_unknown")
-        self.assertEqual(self.backend.calls.count(("contrast", 0)), 1)
-        self.assertEqual(self.backend.values["exposure"], 1)
 
-    def test_restoration_already_effective_after_timeout_reconciles_terminal(self):
-        from c1ai.native_reconcile import reconcile
-        self.backend.reconcile = lambda record: reconcile(self.backend, record)
-        applied = self.core.dispatch(self.request())
-        self.backend.fail_field, self.backend.fail_after_write = "exposure", True
-        request = {"command": "operations", "operation_id": applied["operation_id"]}
-        self.core.dispatch({**request, "action": "restore"})
-        reconciled = self.core.dispatch({**request, "action": "reconcile"})
-        self.assertEqual(reconciled["status"], "restored")
-        self.assertEqual(reconciled["restore_observation"]["values"]["exposure"], 0)
-        self.assertEqual(reconciled["restore_scope"], "observed_numeric_values")
-        self.assertFalse(reconciled["full_model_restore_verified"])
-        self.assertIsNone(reconciled["pixel_restore_verified"])
-        self.assertFalse(reconciled["model_verified"])
-        self.assertTrue(self.core.dispatch({**request, "action": "restore"})["existing"])
-        self.assertEqual(self.backend.calls.count(("exposure", 0)), 1)
 
     def test_numeric_reconcile_restored_requires_complete_baseline_evidence(self):
         self.backend.fail_field = "exposure"
@@ -472,15 +462,18 @@ class CoreTests(unittest.TestCase):
         self.assertEqual(output["error"]["code"], "invalid_evidence")
         self.assertEqual(self.core.journal.get(operation_id=applied["operation_id"])["status"], "outcome_unknown")
 
-    def test_numeric_restore_records_observation_scope_without_claiming_model_or_pixel_reversal(self):
+    def test_numeric_readonly_reconcile_records_baseline_scope_without_pixel_claim(self):
+        self.backend.fail_field, self.backend.fail_after_write = "exposure", True
         applied = self.core.dispatch(self.request())
-        restored = self.core.dispatch({"command": "operations", "action": "restore", "operation_id": applied["operation_id"]})
+        self.backend.values["exposure"] = 0  # Independent external restoration, never a Core recovery write.
+        self.backend.reconcile = lambda record: {"outcome":"restored", "target":self.backend.target,
+            "evidence":{"scope":"control_readback", "observation":self.backend.observe(list(record["before"]["values"]))}}
+        restored = self.core.dispatch({"command":"operations", "action":"reconcile", "operation_id":applied["operation_id"]})
         self.assertEqual(restored["status"], "restored")
         self.assertEqual(restored["restore_scope"], "observed_numeric_values")
         self.assertFalse(restored["full_model_restore_verified"])
         self.assertIsNone(restored["pixel_restore_verified"])
-        stored = self.core.journal.get(operation_id=applied["operation_id"])
-        self.assertEqual(stored["restore_scope"], "observed_numeric_values")
+        self.assertEqual(self.backend.calls,[("exposure",1)])
 
     def test_legacy_terminal_numeric_receipt_gets_scope_without_replay_or_rewrite(self):
         request = self.request()
@@ -488,7 +481,7 @@ class CoreTests(unittest.TestCase):
         self.core.journal.update(applied["operation_id"], status="restored")
         writes = self.core.journal.db.total_changes
         calls = list(self.backend.calls)
-        for action in ("get", "restore", "reconcile", "recover"):
+        for action in ("get", "reconcile"):
             result = self.core.dispatch({"command": "operations", "action": action, "operation_id": applied["operation_id"]})
             self.assertEqual(result["restore_scope"], "observed_numeric_values")
             self.assertFalse(result["full_model_restore_verified"])
@@ -510,22 +503,15 @@ class CoreTests(unittest.TestCase):
         self.assertFalse(self.backend.calls)
         self.assertEqual(result["status"], "refused")
 
-    def test_failed_final_observation_is_recorded_as_not_dispatched(self):
+    def test_native_batch_preflight_failure_is_recorded_as_not_dispatched(self):
         request = self.request()
-        observe = self.core._observe
-        count = 0
-        def fail_final(fields):
-            nonlocal count
-            count += 1
-            if count == 2:
-                raise RuntimeError("reader disconnected before setter")
-            return observe(fields)
-        with patch.object(self.core, "_observe", side_effect=fail_final):
-            result = self.core.dispatch(request)
+        self.backend.set_values = Mock(side_effect=BackendFailure(dispatched=False,
+            details={"reason":"native batch target validation failed before setter"}))
+        result = self.core.dispatch(request)
         self.assertEqual(result["status"], "refused")
         self.assertEqual(result["actions"][0]["status"], "not_dispatched")
         self.assertFalse(self.backend.calls)
-        self.assertFalse(self.core.dispatch({"command": "context"})["pending_operations"])
+        self.assertFalse(self.core.dispatch({"command":"context"})["pending_operations"])
 
     def test_trusted_backend_no_dispatch_evidence_does_not_leave_pending(self):
         request = self.request()
@@ -558,35 +544,39 @@ class CoreTests(unittest.TestCase):
                     finally:
                         core.close()
 
-    def test_successful_set_then_read_false_evidence_remains_unknown(self):
+    def test_completed_batch_with_failed_readback_never_claims_model_verification(self):
         request = self.request()
         observe, count = self.core._observe, 0
         def fail_after_set(fields):
             nonlocal count
             count += 1
-            if count == 3:
-                raise BackendFailure(dispatched=False, details={"possibly_mutated": False})
+            if count == 2:
+                raise BackendFailure(dispatched=False, details={"possibly_mutated":False})
             return observe(fields)
-        with patch.object(self.core, "_observe", side_effect=fail_after_set):
+        with patch.object(self.core,"_observe",side_effect=fail_after_set):
             result = self.core.dispatch(request)
-        self.assertEqual(self.backend.values["exposure"], 1)
-        self.assertEqual(result["status"], "outcome_unknown")
-        self.assertIs(result["actions"][0]["error"]["dispatched"], True)
+        self.assertEqual(self.backend.values["exposure"],1)
+        self.assertEqual(result["status"],"partial")
+        self.assertEqual(result["actions"][0]["status"],"completed")
+        self.assertFalse(result["model_verified"])
+        self.core.dispatch(request)
+        self.assertEqual(self.backend.calls,[("exposure",1)])
 
-    def test_no_dispatch_second_field_preserves_prior_partial_write(self):
+    def test_second_field_refusal_cannot_certify_entire_batch_not_dispatched(self):
         setter = self.backend.set_value
-        def refuse_second(field, value, observation):
-            if field == "contrast":
-                raise BackendFailure(dispatched=False)
-            return setter(field, value, observation)
+        def refuse_second(field,value,observation):
+            if field == "contrast":raise BackendFailure(dispatched=False)
+            return setter(field,value,observation)
         self.backend.set_value = refuse_second
-        result = self.core.dispatch(self.request({"exposure": 1, "contrast": 2}))
-        self.assertEqual(result["status"], "partial")
-        self.assertEqual([action["status"] for action in result["actions"]], ["completed", "not_dispatched"])
-        self.assertEqual(self.backend.values["exposure"], 1)
-        restored = self.core.dispatch({"command": "operations", "action": "restore", "operation_id": result["operation_id"]})
-        self.assertEqual(restored["status"], "restored")
-        self.assertEqual(self.backend.values["exposure"], 0)
+        request = self.request({"exposure":1,"contrast":2})
+        result = self.core.dispatch(request)
+        self.assertEqual(result["status"],"outcome_unknown")
+        self.assertEqual([action["status"] for action in result["actions"]],["outcome_unknown"])
+        self.assertIs(result["actions"][0]["error"]["dispatched"],True)
+        self.assertEqual(self.backend.values["exposure"],1)
+        self.assertEqual(self.backend.values["contrast"],0)
+        self.core.dispatch(request)
+        self.assertEqual(self.backend.calls,[("exposure",1)])
 
     def test_timeout_after_write_is_not_replayed(self):
         request = self.request()
@@ -599,13 +589,16 @@ class CoreTests(unittest.TestCase):
         blocked = self.core.dispatch(self.request({"contrast": 2}, "second"))
         self.assertEqual(blocked["error"]["code"], "pending_operation")
 
-    def test_second_field_failure_keeps_first_field_receipt(self):
+    def test_failed_native_batch_has_one_unknown_receipt_and_is_not_replayed(self):
         self.backend.fail_field = "contrast"
-        result = self.core.dispatch(self.request({"exposure": 1, "contrast": 2, "brightness": 3}))
-        self.assertEqual(result["status"], "outcome_unknown")
-        self.assertEqual(result["progress"], {"exposure": "control_confirmed"})
-        self.assertEqual([a["status"] for a in result["actions"]], ["completed", "outcome_unknown"])
-        self.assertEqual(self.backend.values["brightness"], 0)
+        request = self.request({"exposure":1,"contrast":2,"brightness":3})
+        result = self.core.dispatch(request)
+        self.assertEqual(result["status"],"outcome_unknown")
+        self.assertEqual([(a["name"],a["status"]) for a in result["actions"]],[("parameters.set","outcome_unknown")])
+        self.assertEqual(self.backend.values["exposure"],1)
+        self.assertEqual(self.backend.values["brightness"],0)
+        self.core.dispatch(request)
+        self.assertEqual(self.backend.calls,[("exposure",1),("contrast",2)])
 
     def test_pending_survives_pid_and_core_restart(self):
         self.backend.fail_field = "exposure"
@@ -651,69 +644,33 @@ class CoreTests(unittest.TestCase):
         output = self.core.dispatch({"command": "operations", "action": "reconcile", "operation_id": result["operation_id"]})
         self.assertEqual(output["error"]["code"], "target_changed")
 
-    def test_restore_timeout_preserves_operation_and_never_replays(self):
-        result = self.core.dispatch(self.request({"exposure": 1, "contrast": 2}))
-        self.backend.fail_field, self.backend.fail_after_write = "exposure", True
-        output = self.core.dispatch({"command": "operations", "action": "restore", "operation_id": result["operation_id"]})
-        self.assertEqual(output["status"], "outcome_unknown")
-        self.assertEqual(output["operation_id"], result["operation_id"])
-        self.assertEqual(output["restore_observation"]["values"]["contrast"], 0)
-        count = len(self.backend.calls)
-        again = self.core.dispatch({"command": "operations", "action": "restore", "operation_id": result["operation_id"]})
-        self.assertEqual(again["error"]["code"], "unconfirmed_after")
-        self.assertEqual(len(self.backend.calls), count)
 
-    def test_reconcile_can_qualify_unknown_after_for_conditional_restore(self):
+    def test_readonly_reconcile_does_not_reenable_retired_automatic_recovery(self):
         self.backend.fail_field, self.backend.fail_after_write = "exposure", True
         result = self.core.dispatch(self.request())
-        self.backend.fail_field = None
-        resolved = self.core.dispatch({"command": "operations", "action": "reconcile", "operation_id": result["operation_id"]})
+        resolved = self.core.dispatch({"command":"operations","action":"reconcile","operation_id":result["operation_id"]})
         self.assertTrue(resolved["reconciled_numeric_after"])
-        restored = self.core.dispatch({"command": "operations", "action": "restore", "operation_id": result["operation_id"]})
-        self.assertEqual(restored["status"], "restored")
-        self.assertEqual(self.backend.values["exposure"], 0)
-        self.assertEqual(restored["actions"][0]["status"], "outcome_unknown")
-        self.assertNotEqual(restored["actions"][0]["action_id"], restored["actions"][1]["action_id"])
+        self.backend.recover=Mock(side_effect=AssertionError("Automatic recovery must not run"))
+        before=self.core.journal.get(operation_id=result["operation_id"])
+        for action in ("restore","recover"):
+            output=self.core.dispatch({"command":"operations","action":action,"operation_id":result["operation_id"]})
+            self.assertEqual(output["error"]["code"],"unsupported")
+        self.assertEqual(self.core.journal.get(operation_id=result["operation_id"]),before)
+        self.assertEqual(self.backend.calls,[("exposure",1)])
+        self.backend.recover.assert_not_called()
 
-    def test_old_reconciliation_does_not_qualify_a_later_restore_timeout(self):
-        self.backend.fail_field, self.backend.fail_after_write = "exposure", True
-        result = self.core.dispatch(self.request())
-        self.core.dispatch({"command": "operations", "action": "reconcile", "operation_id": result["operation_id"]})
-        first_restore = self.core.dispatch({"command": "operations", "action": "restore", "operation_id": result["operation_id"]})
-        self.assertEqual(first_restore["status"], "outcome_unknown")
-        count = len(self.backend.calls)
-        again = self.core.dispatch({"command": "operations", "action": "restore", "operation_id": result["operation_id"]})
-        self.assertEqual(again["error"]["code"], "unconfirmed_after")
-        self.assertEqual(len(self.backend.calls), count)
 
-    def test_restore_uses_original_operation_and_new_actions(self):
-        result = self.core.dispatch(self.request({"exposure": 1, "contrast": 2}))
-        restored = self.core.dispatch({"command": "operations", "action": "restore", "operation_id": result["operation_id"]})
-        self.assertEqual(restored["status"], "restored")
-        self.assertEqual(restored["operation_id"], result["operation_id"])
-        self.assertEqual(len({a["action_id"] for a in restored["actions"]}), 4)
-        self.assertEqual(self.backend.values["exposure"], 0)
-        self.assertEqual(self.backend.values["contrast"], 0)
-        calls = len(self.backend.calls)
-        self.core.dispatch({"command": "operations", "action": "restore", "operation_id": result["operation_id"]})
-        self.assertEqual(len(self.backend.calls), calls)
 
-    def test_terminal_reconciliation_never_reopens_restored_or_completed_operations(self):
-        adjusted = self.core.dispatch(self.request())
-        restored = self.core.dispatch({"command": "operations", "action": "restore", "operation_id": adjusted["operation_id"]})
-        self.backend.reconcile = Mock(side_effect=AssertionError("Terminal receipts are immutable during reconciliation"))
-        again = self.core.dispatch({"command": "operations", "action": "reconcile", "operation_id": restored["operation_id"]})
-        self.assertEqual(again["status"], "restored")
+    def test_terminal_reconciliation_never_reopens_historical_restored_receipts(self):
+        adjusted=self.core.dispatch(self.request())
+        self.core.journal.update(adjusted["operation_id"],status="restored")
+        self.backend.reconcile=Mock(side_effect=AssertionError("Terminal receipts are immutable during reconciliation"))
+        again=self.core.dispatch({"command":"operations","action":"reconcile","operation_id":adjusted["operation_id"]})
+        self.assertEqual(again["status"],"restored")
         self.assertTrue(again["existing"])
-        self.assertFalse(self.core.dispatch({"command": "context"})["pending_operations"])
+        self.assertFalse(self.core.dispatch({"command":"context"})["pending_operations"])
         self.backend.reconcile.assert_not_called()
 
-    def test_restore_refuses_manual_changes(self):
-        result = self.core.dispatch(self.request())
-        self.backend.values["exposure"] = 3
-        restored = self.core.dispatch({"command": "operations", "action": "restore", "operation_id": result["operation_id"]})
-        self.assertEqual(restored["error"]["code"], "restore_conflict")
-        self.assertEqual(self.backend.values["exposure"], 3)
 
     def test_reconciliation_needs_backend_evidence_not_user_success(self):
         self.backend.fail_field = "exposure"
@@ -733,105 +690,11 @@ class CoreTests(unittest.TestCase):
         self.assertEqual(len(self.backend.calls), calls)
         self.assertFalse(self.core.dispatch({"command": "context"})["pending_operations"])
 
-    def test_recover_keeps_operation_and_journals_new_action_before_dispatch(self):
-        pending = self.pending_preview()
-        def confirm():
-            record = self.core.journal.get(operation_id=pending["operation_id"])
-            self.assertEqual(record["actions"][-1]["status"], "dispatching")
-            self.backend.calls.append(("confirm", 1))
-            return {"accepted": True}
-        def recover(record):
-            self.backend.action_hook("preview.confirm", confirm, intent={"path": "fixed"})
-            return self.recovery_result()
-        self.backend.recover = Mock(side_effect=recover)
-        output = self.core.dispatch({"command": "operations", "action": "recover", "operation_id": pending["operation_id"],
-                                     "steps": ["ignored arbitrary instruction"]})
-        self.assertEqual(output["status"], "applied_not_restored")
-        self.assertEqual(output["operation_id"], pending["operation_id"])
-        self.assertEqual(len(output["actions"]), 2)
-        self.assertNotEqual(output["actions"][0]["action_id"], output["actions"][1]["action_id"])
-        self.assertNotIn("steps", self.backend.recover.call_args.args[0])
-        self.core.dispatch({"command": "operations", "action": "recover", "operation_id": pending["operation_id"]})
-        self.assertEqual(self.backend.recover.call_count, 1)
-        self.assertEqual(self.backend.calls, [("confirm", 1)])
-        self.assertIsNone(self.backend.action_hook)
 
-    def test_recover_never_replays_an_unknown_recovery_action(self):
-        pending = self.pending_preview()
-        def confirm():
-            self.backend.calls.append(("confirm", 1))
-            raise TimeoutError("Confirmation response lost")
-        def recover(record):
-            self.backend.action_hook("preview.confirm", confirm, intent={"path": "fixed"})
-            return self.recovery_result()
-        self.backend.recover = recover
-        request = {"command": "operations", "action": "recover", "operation_id": pending["operation_id"]}
-        first = self.core.dispatch(request)
-        self.assertEqual(first["status"], "outcome_unknown")
-        second = self.core.dispatch(request)
-        self.assertEqual(second["status"], "outcome_unknown")
-        self.assertEqual(second["error"]["code"], "recovery_action_unresolved")
-        self.assertEqual(len(second["actions"]), 2)
-        self.assertEqual(self.backend.calls, [("confirm", 1)])
 
-    def test_recover_reuses_completed_receipt_after_post_action_read_failure(self):
-        pending = self.pending_preview()
-        reads = 0
-        def confirm():
-            self.backend.calls.append(("confirm", 1))
-            return {"accepted": True}
-        def recover(record):
-            nonlocal reads
-            result = self.backend.action_hook("preview.confirm", confirm, intent={"path": "fixed"})
-            self.assertTrue(result["accepted"])
-            reads += 1
-            if reads == 1:
-                raise TimeoutError("Read after confirmation failed")
-            return self.recovery_result()
-        self.backend.recover = recover
-        request = {"command": "operations", "action": "recover", "operation_id": pending["operation_id"]}
-        self.assertEqual(self.core.dispatch(request)["status"], "partial")
-        second = self.core.dispatch(request)
-        self.assertEqual(second["status"], "applied_not_restored")
-        self.assertEqual(len(second["actions"]), 2)
-        self.assertEqual(self.backend.calls, [("confirm", 1)])
 
-    def test_recover_rejects_changed_intent_for_an_existing_action_name(self):
-        pending = self.pending_preview()
-        destination = "first"
-        def confirm():
-            self.backend.calls.append(("confirm", 1))
-            return {"accepted": True}
-        def recover(record):
-            self.backend.action_hook("preview.confirm", confirm, intent={"path": destination})
-            raise RuntimeError("Configuration still unverified")
-        self.backend.recover = recover
-        request = {"command": "operations", "action": "recover", "operation_id": pending["operation_id"]}
-        self.core.dispatch(request)
-        destination = "different"
-        second = self.core.dispatch(request)
-        self.assertEqual(second["error"]["code"], "recovery_action_conflict")
-        self.assertEqual(self.backend.calls, [("confirm", 1)])
 
-    def test_recover_cannot_bypass_another_pending_operation(self):
-        pending = self.pending_preview()
-        source = Path(self.temp.name) / "another-legacy.json"
-        source.write_text("{}", encoding="utf-8")
-        self.core.import_legacy({"operation_id": "another", "target": self.backend.target}, source)
-        self.backend.recover = Mock()
-        output = self.core.dispatch({"command": "operations", "action": "recover", "operation_id": pending["operation_id"]})
-        self.assertEqual(output["error"]["code"], "pending_operation")
-        self.backend.recover.assert_not_called()
 
-    def test_recover_wrong_target_evidence_cannot_unlock(self):
-        pending = self.pending_preview()
-        result = self.recovery_result()
-        result["target"]["variant"]["id"] = "other-variant"
-        self.backend.recover = Mock(return_value=result)
-        output = self.core.dispatch({"command": "operations", "action": "recover", "operation_id": pending["operation_id"]})
-        self.assertEqual(output["status"], "partial")
-        self.assertEqual(output["error"]["code"], "target_changed")
-        self.assertTrue(self.core.dispatch({"command": "context"})["pending_operations"])
 
     def test_image_side_effects_have_individual_actions(self):
         request = self.request()
@@ -872,9 +735,7 @@ class CoreTests(unittest.TestCase):
         self.assertEqual(applied["status"], "control_confirmed")
         self.assertEqual(observed[0]["target"], request["target"])
         self.assertEqual(observed[0]["observation_token"], request["observation_token"])
-        restored = self.core.dispatch({"command": "operations", "action": "restore", "operation_id": applied["operation_id"]})
-        self.assertEqual(restored["status"], "restored")
-        self.assertEqual(observed[-1]["values"]["exposure"], 1)
+        self.assertEqual(len(observed), 1)
         self.backend.context.assert_not_called()
 
     def test_nonnumeric_operation_has_no_unused_context_read(self):

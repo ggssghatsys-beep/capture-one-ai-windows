@@ -282,6 +282,8 @@ class WindowsBackend:
         return observe_module(self,module)
 
     def adjust_module(self, module, patch, observation):
+        if module == "masks" and patch.get("coordinate_space", "raw") != "raw":
+            raise NativeError("UNSUPPORTED_COORDINATE_SPACE", "Windows gradients use normalized RAW coordinates")
         from .native_modules import adjust_module
         return adjust_module(self,module,patch,observation)
 

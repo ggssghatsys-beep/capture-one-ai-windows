@@ -1,5 +1,7 @@
 # 当前执行架构
 
+Mac 开发入口为 `CLI/MCP → 当前用户 Unix socket → 同一 Core → MacOSBackend → 官方 Apple Events/JXA`。Mac 使用官方脚本 ID、进程启动时间、Session 文件路径和 Image 层绑定目标；候选、数值调色和四个结构调色模块的代表值、集合分页及受限串行批量已实测。批量复用原有单项旧值保护和日志，不提供事务回滚或自动续跑。修改前比较旧值，修改后回读完整已观察模块，拒绝目标变化；Apple Events 不是原子事务。未知结果不重放。Mac 预览通过显式授权的原生 Capture Pilot 服务：Apple Events 管理临时共享，校验本机端口所属 C1 PID，以原生集合与目标匹配 Pilot ID，前后检查公开调整快照，直接交付 JPEG 并关闭服务；没有导出回退。以下其余章节描述 Windows 实现，详见 [Mac 当前记录](MAC_STATUS.md)。
+
 唯一正常编辑通道：`CLI/MCP → Core → WindowsBackend.read_model/write_model → C1 内部管道 → UI 线程 → CoreVariant 正常 getter/setter`。
 
 活动调整层复用这一通道：背景使用变体 getter/setter；局部使用 CoreLocalAdjustmentsLayer 的泛型 GetValue/SetValue，保留 C1 的 Undo/通知机制。先由宿主 IsPropertyAvailable 检查图层支持；白平衡使用 WhiteBalanceHelper/WhiteBalanceConverter；混色器 AddCorrection 按当前层选择属性集。读写时仍校验同一 Mask.GUID，不因允许局部调整而放宽目标检查。

@@ -1,6 +1,10 @@
-# Capture One AI Windows
+# Capture One AI · Windows / macOS
 
-**直接填 API 对话修图，也可以接入桌面 AI 的 MCP；配套独立波形图和蒙版肤色分析。** 让视觉 AI 在 Windows 上读取和调整 Capture One，并取得 C1 实际渲染的预览。提供 **API 修图窗口 + MCP stdio + JSON CLI**，共用一套原生执行接口。
+**0.4.0a1：合并原生 Mac 开发预览与现有 Windows 客户端。** Windows 保留 16.8.6.3784 的现有功能；Mac 在 Apple Silicon / macOS 15.7.4 / C1 16.8.6.25 / Session 完成代表性实测，包含原生调色、图层／蒙版、RGB 波形和菜单栏常驻入口。Mac 是版本绑定的源码预览，尚非独立签名安装包；具体缺口见 [Mac 当前范围](docs/MAC_STATUS.md)。
+
+**安装时让桌面 AI 先询问是否创建桌面波形图入口。** 同意后才创建，不同平台共用同一工具接口。[复制安装提示](docs/AI_INSTALL_PROMPT.md) · [Mac 安装](docs/INSTALL_MAC.md) · [Windows 安装](docs/INSTALL.md)。
+
+**直接填 API 对话修图，也可以接入桌面 AI 的 MCP；配套独立波形图和蒙版肤色分析。** 让视觉 AI 通过平台原生接口读取和调整 Capture One，并取得 C1 实际渲染的预览。提供 **API 修图窗口 + MCP stdio + JSON CLI**，共用一套原生执行接口。
 
 **0.3.0a3 新增 API 修图窗口：** 填写 API 地址和密钥 → 从服务读取模型 → 查询思考等级 → 输入需求，选择“仅分析”或“在副本修图”。无需另外安装聊天客户端。支持 **OpenAI Responses API** 及实现相同图片／工具调用协议的服务；仅有 Chat Completions 的接口暂不支持。模型和等级不使用固定清单，服务未提供的能力明确标为未知。
 
@@ -47,6 +51,8 @@ AI 分析当前图层时调用 `analyze_image(analysis_scope="active_layer", inc
 
 希望让桌面 AI 帮你安装、把波形图启动器放到桌面并与 C1 一起打开，可复制 [AI 安装提示](docs/AI_INSTALL_PROMPT.md)。人用窗口，AI 用 MCP；两者共用同一图像分析核心，窗口关闭不影响 AI 读取数值。
 
+Mac 使用 Apple Silicon Python 3.11+：`python3.12 scripts/install_macos.py`。同意创建波形桌面入口后加 `--desktop-scopes`；原生桥本机构建与授权步骤见 [Mac 安装](docs/INSTALL_MAC.md)。以下保留 Windows 安装步骤。
+
 需要 64 位 Windows、有效授权的 C1 **16.8.6.3784**、64 位 Python 3.11+、PowerShell **7.6+** 与 .NET 10 Windows Desktop Runtime。本机验收 Python 3.14.7 / PowerShell 7.6.5，其他 Python 版本未逐项实测。安装依赖需要联网，运行库和 C1 均不随包分发。
 
 下载 [Releases](https://github.com/ggssghatsys-beep/capture-one-ai-windows/releases) 的 Windows ZIP，解压到固定目录。在该目录的 PowerShell 7 中执行：
@@ -81,7 +87,7 @@ API 修图窗口 / 外部视觉 AI → 同一 MCP 工具 / CLI → 串行执行�
 
 ## 包内文档
 
-继续开发可直接克隆本仓库最新源码，先读 [开发 AI 入口](AGENTS.md)。计划开发 Mac 版时阅读 [macOS 开发交接](docs/MAC_PORT.md)；**这是迁移说明，当前版本仍只支持已验证的 Windows 环境**。
+继续开发请克隆本仓库最新源码，先读 [AGENTS](AGENTS.md)。Windows 与 Mac 保留独立宿主实现，工具和分析核心共享。Mac 已实现与实机验证范围、复杂蒙版限制及版本绑定见 [MAC_STATUS](docs/MAC_STATUS.md)，安装入口见 [INSTALL_MAC](docs/INSTALL_MAC.md)。本次发布为双平台源码包；旧 Windows ZIP 不被替换。
 
 | 文档 | 内容 |
 |---|---|
@@ -96,7 +102,10 @@ API 修图窗口 / 外部视觉 AI → 同一 MCP 工具 / CLI → 串行执行�
 | [DEVELOPMENT](docs/DEVELOPMENT.md) | 开发和发布包生成 |
 | [AGENTS](AGENTS.md) | 开发 AI 接手顺序、原生优先和原图保护原则 |
 | [MAC_PORT](docs/MAC_PORT.md) | Mac 迁移入口、可复用代码、已知缺口与验收顺序 |
+| [MAC_STATUS](docs/MAC_STATUS.md) | Mac 原生开发入口、实机结果与剩余限制 |
 
-运行状态在当前用户 `%LOCALAPPDATA%\CaptureOneAI`，不进入仓库。分发包不含照片、预览、Session、私人配置、连接令牌或历史操作数据库。预览只保留最近 8 张缓存，不是永久成片导出。
+运行状态在当前用户 `%LOCALAPPDATA%\CaptureOneAI`，不进入仓库。分发包不含照片、预览、Session、私人配置、连接令牌或历史操作数据库。Windows 原生预览只保留最近 8 张缓存，不是永久成片导出。
 
 [MIT License](LICENSE) · [Third-party notices](THIRD_PARTY_NOTICES.md)
+
+Mac 快速窗口直接读取 C1 当前完整裁切的 RGB 缓冲，持续更新代表值约 0.14～0.16s；精确局部分析仍按需计算，尚不承诺所有请求低于 0.5s。校样、位深及其他边界见 [图像分析](docs/SCOPES.md)。

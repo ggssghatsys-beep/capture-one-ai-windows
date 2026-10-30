@@ -12,12 +12,16 @@
 
 ## 当前基线
 
+- 0.4.0a1 合并 Mac 原生源码预览与 Windows 既有版本。安装 AI 先询问是否创建波形桌面入口，已明确选择则不重复问；Mac 使用 scripts/install_macos.py（--desktop-scopes 显式创建），Windows 保留 -WithScopes，并支持 -NoScopesShortcut。发布范围以 README／INSTALL_MAC／MAC_STATUS 开头为准，下面旧版本记录保留历史证据。
+
 - 当前版本 0.3.0a3 / tag `v0.3.0-alpha.3` 新增直接填写 API 的 AI 窗口，见 docs/AI_WINDOW.md。新窗口已做本机 C1 副本调用验收，真实模型/API 尚未联调。模型列表和思考等级从服务查询，禁止预填固定清单冒充支持能力。
 
 - 历史版本 0.3.0a2 / tag `v0.3.0-alpha.2`，以及 0.3.0a1、0.2.0a1 保留。实测 Windows + Capture One 16.8.6.3784 + Session。
 - 分析窗口默认跟随当前图层蒙版；MCP analyze_image 保留默认整图语义，局部分析显式传 analysis_scope=active_layer。肤色参考不是皮肤检测，空蒙版不回退整图；详情见 docs/SCOPES.md。
-- **macOS 后端尚未实现或实机验证。** 迁移文档是开发交接，不是 Mac 使用说明。
+- **macOS 已实测 Image 层数值调色及曲线、色阶、Basic/Advanced、色彩平衡的代表性闭环，集合分页与受限批量通过。显式授权的 Capture Pilot 预览已通过曝光修改／恢复和 MCP 图片交付；局部层已接通多层定位／改名、启用／透明度与七个调色模块，具体代表性实测范围见 MAC_STATUS；蒙版已有限接通 AI 创建、填满／清空和亮度范围，官方羽化／完善和普通栅格反相已通过代表性闭环，可选 AX 的背景加／减／相交、已有简单线性来源组合、子项定位／删除和局部 Skin 色相已通过代表性产品实机验证；完整图层复制和显式鼠标后备的图层排序也已通过代表性实测。** 已补相邻不同 RAW 的预览、模块快照粘贴和固定中性值重置；局部曝光／曲线 reset/paste 的代表性闭环与跨层曲线粘贴通过；白平衡不重置，色彩编辑器重置仅 Basic/Advanced。预览限定已配置 Session／源集合，支持保存态稳定的多层整图渲染，见 [Mac 当前记录](docs/MAC_STATUS.md)。
+- **Mac 原生桥已接公共六工具，主体／背景创建、简单父反相及整父填满／清空也已统一；复合整父反相明确拒绝：** 16.8.6.25 arm64 上整图／灰度蒙版 PNG、空层归一化 RAW 线性／径向创建、参数回读和整图效果已通过代表性实机闭环；同仓库 0.3.0a3 的共享图像分析与 Qt 四视图也已通过 Mac 实测。map_points、含局部层源克隆和 Mac 分发仍未完成；真实模型 API 未联调。桥为显式启用的版本绑定内部接口，详见 [MAC_STATUS](docs/MAC_STATUS.md) 开头。
 - 保留当前 Windows 功能，优先在同一项目中新增 Mac 平台实现，不重写全部系统。
+- 后续 Mac 原生桥增量已通过代表性实机：同类型简单渐变直接再编辑；Basic／Advanced／Skin 后台读写和完整中性重置；图层复制／排序、来源／背景 AI 组合、子项选择删除。旧 AX／鼠标说明仅用于未配置桥的兼容路线；准确模式与边界以 MAC_STATUS 开头及返回能力为准。
 - 原六个公共工具为 context、images、read、adjust、preview、operations；MCP 与 CLI 共用核心，不按 AI 厂商另建一套工具。
 - `windows/scopes-analysis` 开发分支按用户授权增补第七个工具 analyze_image；六个旧工具语义不变。波形开发与验证见 docs/SCOPES.md、docs/SCOPES_VALIDATION.md。不得重复要求用户已拒绝的裁剪测试。
 - 从 GitHub 最新源码接续开发。现有 Release ZIP 是 Windows 交付快照，不能当作最新开发分支或 Mac 安装包。

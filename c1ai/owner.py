@@ -13,6 +13,7 @@ import os
 from pathlib import Path
 import queue
 import struct
+import sys
 import threading
 import time
 from typing import Callable
@@ -132,6 +133,9 @@ def win32() -> Win32:
 
 def state_directory() -> Path:
     """Fixed across installations, clients, project directories and versions."""
+    if sys.platform == "darwin":
+        from .macos_ipc import state_directory as macos_state_directory
+        return macos_state_directory()
     if os.name != "nt":
         raise OSError("Capture One AI owner requires Windows")
     return Path(os.environ.get("LOCALAPPDATA", Path.home() / "AppData" / "Local")) / "CaptureOneAI"
@@ -443,6 +447,9 @@ class NamedPipeServer:
 
 
 def serve_owner():
+    if sys.platform == "darwin":
+        from .macos_ipc import serve_owner as serve_macos_owner
+        return serve_macos_owner()
     def build_dispatcher():
         from .core import Core
         from .windows_backend import WindowsBackend

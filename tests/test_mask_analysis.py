@@ -35,6 +35,42 @@ def test_masked_waveform_has_no_false_black_trace_outside_mask():
     assert scope[335:350,1300:1700].max()<100
     assert scope[610:621,1300:1700].max()<100
 
+def test_native_raw_mask_matches_encoded_coverage():
+    pixels=decode(png([[[255,0,0],[0,0,255],[0,255,0]]]))
+    raw=bytes([255,255,255,255,128,128,128,255,0,0,0,255])
+    meta={'width':3,'height':1,'stride':12,'format':'BGRA8','row_order':'top-down','bit_depth':8}
+    from_raw=apply_mask(pixels,raw,{}, {},raw=meta)
+    encoded=apply_mask(pixels,png([[255,128,0]]),{}, {})
+    assert analyze(from_raw)==analyze(encoded)
+    assert from_raw.metadata['sample_mask_sha256']==encoded.metadata['sample_mask_sha256']
+    with pytest.raises(ValueError,match='opaque grayscale'):
+        apply_mask(pixels,bytes([0,255,255,255])+raw[4:],{}, {},raw=meta)
+
+def test_display_mask_validates_original_pixels_before_downsampling():
+    display=decode(png([[[128,128,128]]]),precision='display')
+    rgba=np.full((16,16,4),128,dtype=np.uint8);rgba[:,:,3]=255
+    valid=apply_mask(display,png(rgba),{}, {})
+    assert valid.mask_weights[0,0]==pytest.approx(128/255)
+    exact=decode(png([[[128,128,128]]]))
+    with pytest.raises(ValueError,match='sizes differ'):apply_mask(exact,png(rgba),{}, {})
+    raw={'width':16,'height':16,'stride':64,'format':'BGRA8','row_order':'top-down','bit_depth':8}
+    for channel,value in ((2,129),(3,254)):
+        invalid=rgba.copy();invalid[0,0,channel]=value
+        for data,metadata in ((png(invalid),None),(invalid.tobytes(),raw)):
+            with pytest.raises(ValueError,match='opaque grayscale'):
+                apply_mask(display,data,{}, {},raw=metadata)
+
+def test_display_density_keeps_feather_weights_and_zero_coverage_empty():
+    pixels=decode(png(np.full((30,60,3),128)),precision='display')
+    mask=np.zeros((30,60),dtype=np.uint8);mask[:,:20]=255;mask[:,20:40]=64
+    weighted=apply_mask(pixels,png(mask),{}, {})
+    plot=np.asarray(scope_image(weighted,mode='waveform'))
+    full=plot[335:350,200:500].max();feather=plot[335:350,850:1150].max()
+    assert full>feather>100 and plot[335:350,1550:1800].max()<100
+    empty=apply_mask(pixels,png(np.zeros_like(mask)),{}, {})
+    assert region_metadata(empty)['pixel_count']==0
+    assert np.asarray(scope_image(empty,mode='waveform'))[335:350,200:1800].max()<100
+
 def test_same_area_different_mask_refused():
     base={'photo_key':'a','source':'native','policy':{},'analysis_size':[2,1],'color':{},'crop_signature':'x',
           'analysis_scope':'active_layer','sample_mask_sha256':'left'}
@@ -61,14 +97,15 @@ def test_empty_mask_never_falls_back_or_reports_stale_snapshot_fresh(tmp_path):
     from c1ai.analysis_service import AnalysisService
     class Backend:
         revision='1'
-        def observe(self,fields):
+        def analysis_observe(self):
             target={'image':{'path':'test.raw'},'variant':{'id':'v','label':'test'},'layer':{'native_id':'m'}}
             return {'target':target,'native_context':{'process_revision':self.revision,'target':{'document_uuid':'d'},
-                'image_path':'test.raw','layers':[{'name':'empty','native_id':'m','selected':True}]}}
+                'bridge_target':{'variant_uuid':'v'},'image_path':'test.raw','layers':[{'name':'empty','native_id':'m','selected':True}]}}
         def preview(self,request,observation):
+            assert request['pixel_buffer'] is True and request['max_size']==1600
             mask=request['kind']=='mask'
-            data=png([[0,0]]) if mask else bytes([30,60,90,255]*2)
-            path=tmp_path/('mask.png' if mask else 'photo.bgra');path.write_bytes(data)
+            data=bytes([0,0,0,255]*2) if mask else bytes([30,60,90,255]*2)
+            path=tmp_path/('mask.bgra' if mask else 'photo.bgra');path.write_bytes(data)
             image={'width':2,'height':1,'stride':8,'format':'BGRA8','row_order':'top-down','bit_depth':8,
                    'sha256':hashlib.sha256(data).hexdigest()}
             return {'status':'completed','revision':self.revision,'path':str(path),'image':image,'preview_id':'p','geometry':{}}

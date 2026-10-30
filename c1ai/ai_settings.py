@@ -1,4 +1,4 @@
-"""Local API preferences. Optional secrets use Windows DPAPI, never repository files."""
+"""Local API preferences; optional secrets use Windows DPAPI or macOS Keychain."""
 from __future__ import annotations
 
 import base64
@@ -6,6 +6,8 @@ import ctypes
 from ctypes import wintypes
 import json
 import os
+import sys
+import uuid
 from pathlib import Path
 from urllib.parse import urlsplit, urlunsplit
 
@@ -54,7 +56,17 @@ def _crypt(data: bytes, decrypt: bool = False) -> bytes:
 
 
 def settings_path() -> Path:
+    if sys.platform == 'darwin':
+        from .macos_ipc import state_directory
+        return state_directory() / 'ai-settings.json'
     return Path(os.environ.get('LOCALAPPDATA', Path.home())) / 'CaptureOneAI' / 'ai-settings.json'
+
+
+def _keychain():
+    # Use the existing native Keychain adapter, not a custom encryption scheme
+    # or a configurable plaintext keyring fallback.
+    from keyring.backends.macOS import Keyring
+    return Keyring()
 
 
 def load_settings(path: Path | None = None) -> dict:
@@ -69,7 +81,15 @@ def load_settings(path: Path | None = None) -> dict:
             raise ValueError('API 配置字段格式无效，请重新设置。')
     endpoint = normalize_url(value.get('base_url', DEFAULT_URL))
     key, warning = '', ''
-    if value.get('encrypted_credentials'):
+    if value.get('keychain_account') and sys.platform == 'darwin':
+        try:
+            secret = json.loads(_keychain().get_password('CaptureOneAI.API', value['keychain_account']) or '{}')
+            if secret.get('base_url') != endpoint or not isinstance(secret.get('key'), str):
+                raise ValueError('Keychain credential does not match this endpoint')
+            key = secret['key']
+        except Exception:
+            warning = '无法读取钥匙串中的密钥，请重新输入；也可以仅在本次运行使用。'
+    elif value.get('encrypted_credentials'):
         try:
             secret = json.loads(_crypt(base64.b64decode(value['encrypted_credentials']), True))
             if not isinstance(secret, dict) or secret.get('base_url') != endpoint:
@@ -87,11 +107,29 @@ def load_settings(path: Path | None = None) -> dict:
 def save_settings(base_url: str, model: str, key: str, remember: bool,
                   path: Path | None = None, *, effort: str = '') -> None:
     value = {'base_url': normalize_url(base_url), 'model': model.strip(), 'effort': effort.strip()}
-    if remember and key:
+    path = path or settings_path()
+    old_account = None
+    if sys.platform == 'darwin' and path.exists():
+        old_account = json.loads(path.read_text('utf-8')).get('keychain_account')
+    if remember and key and sys.platform == 'darwin':
+        account = uuid.uuid4().hex
+        try:
+            _keychain().set_password('CaptureOneAI.API', account,
+                json.dumps({'base_url': value['base_url'], 'key': key}))
+        except Exception as error:
+            raise RuntimeError('无法保存到 macOS 钥匙串；可取消记住密钥，仅在本次运行使用。') from error
+        value['keychain_account'] = account
+    elif remember and key:
         secret = json.dumps({'base_url': value['base_url'], 'key': key}).encode('utf-8')
         value['encrypted_credentials'] = base64.b64encode(_crypt(secret)).decode('ascii')
-    path = path or settings_path()
     path.parent.mkdir(parents=True, exist_ok=True)
     temporary = path.with_suffix('.tmp')
     temporary.write_text(json.dumps(value, ensure_ascii=False, indent=2), 'utf-8')
+    if sys.platform == 'darwin':
+        temporary.chmod(0o600)
     temporary.replace(path)
+    if old_account:
+        try:
+            _keychain().delete_password('CaptureOneAI.API', old_account)
+        except Exception:
+            pass  # New settings remain usable if macOS refuses old-entry cleanup.

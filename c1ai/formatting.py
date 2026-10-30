@@ -8,7 +8,8 @@ _LOCATORS = {"raw_state", "nodes", "node", "selector", "selectors", "bindings",
              "guard", "post_guard", "runtime_id", "ancestors", "previous_sibling"}
 _OBSERVATION = {"status", "target", "values", "evidence", "observation_token",
                 "source", "scope", "limits", "model_verified", "render_verified",
-                "error", "errors", "warnings", "missing", "module", "state", "guidance"}
+                "error", "errors", "warnings", "missing", "module", "state", "guidance",
+                "module_capability", "submask_inventory", "gradient_view"}
 _WRITE = {"operation_id", "request_id", "status", "progress", "after", "target",
           "result", "error", "errors", "model_verified", "model_commit_verified",
           "render_verified", "control_readback_verified", "quality_approved", "evidence",

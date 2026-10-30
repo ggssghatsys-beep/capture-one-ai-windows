@@ -1,11 +1,12 @@
 # Third-party materials
 
-The MIT license in this repository covers this project's own Python, C#, PowerShell code and documentation. Capture One and its trademarks belong to their respective owners. This project is unofficial and is not endorsed by Capture One.
+The MIT license in this repository covers this project's own code and documentation. Capture One and its trademarks belong to their respective owners. This project is unofficial and is not endorsed by Capture One.
 
 Capture One executables, assemblies, SDK files, camera profiles and image-processing components are **not distributed**. Install and license Capture One separately. The release includes only this project's own compiled bridge assemblies and their source.
 
 Python packages are installed separately by pip and retain their own licenses, including the MCP Python SDK and Pillow and their dependencies. Python, PowerShell and the .NET runtime are not bundled.
 
+The optional macOS bridge loader uses separately installed [Frida](https://github.com/frida/frida). Historical research prototypes also import [frida-objc-bridge 8.0.6](https://github.com/frida/frida-objc-bridge/tree/d980532e50c3e4a1c12c737c76fe76647fb94c2c), whose declared license is `LGPL-2.0 WITH WxWindows-exception-3.1`. These dependencies, their compiled JavaScript bundles, and the Mac native bridge build are not included in the current Windows release package. Their licenses are not replaced by this project's MIT license.
 Image analysis uses NumPy (BSD-3-Clause), Pillow/ImageCms, optional PySide6-Essentials (Qt/PySide LGPLv3/GPLv3/commercial terms as applicable), and PyAV 17.1 (BSD-3-Clause) to call FFmpeg's waveform filter in process. FFmpeg and the libraries contained in a particular PyAV wheel retain their own LGPL/GPL licenses; the project's MIT license does not relicense them. These packages are installed by pip, not copied into this source release. See [PyAV's license](https://github.com/PyAV-Org/PyAV/blob/v17.1.0/LICENSE.txt) and [FFmpeg licensing](https://ffmpeg.org/legal.html) before redistributing a bundled executable.
 
 Scopes research examined ScopeWalker (CC0-1.0, commit 2b04fab7cdaa34a65c7e508abc6a4112c5cdf983), FilmCraft scopes (MIT OR Apache-2.0, commit 8d925e9df32d8755f22bd2635e400a6b3e93f69c), Scopes++ (GPL-3.0), and LiveLegacy (MIT). No source from these projects was copied. ScopeWalker uses screen capture; our source is Capture One's existing internal renderer. Source links and selection rationale are in docs/SCOPES.md.

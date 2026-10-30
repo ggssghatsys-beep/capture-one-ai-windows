@@ -1,0 +1,50 @@
+name: Publish source preview
+
+on:
+  push:
+    branches: [main]
+    paths: [pyproject.toml, .github/workflows/publish-source.yml]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: source-preview-release
+  cancel-in-progress: false
+
+jobs:
+  release:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - name: Package and publish the versioned source preview
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          version=$(python3 -c 'import tomllib; print(tomllib.load(open("pyproject.toml", "rb"))["project"]["version"])')
+          tag=$(python3 -c 'import re,sys; m=re.fullmatch(r"([0-9]+\.[0-9]+\.[0-9]+)a([0-9]+)",sys.argv[1]); assert m, "Expected an alpha preview version"; print("v"+m[1]+"-alpha."+m[2])' "$version")
+          if gh release view "$tag" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "Existing release preserved: $tag"
+            exit 0
+          fi
+          python3 scripts/package_release.py
+          tag_commit=$(git ls-remote origin "refs/tags/$tag" "refs/tags/$tag^{}" | awk -v ref="refs/tags/$tag" '$2==ref {base=$1} $2==ref"^{}" {peeled=$1} END {print peeled ? peeled : base}')
+          if [ -n "$tag_commit" ] && [ "$tag_commit" != "$GITHUB_SHA" ]; then
+            echo "Refusing to attach current source to a tag for another commit: $tag" >&2
+            exit 1
+          fi
+          if [ -z "$tag_commit" ]; then
+            gh api --method POST "repos/$GITHUB_REPOSITORY/git/refs" -f ref="refs/tags/$tag" -f sha="$GITHUB_SHA" --silent
+          fi
+          gh release create "$tag" dist/*-Source.zip dist/SHA256SUMS.txt \
+            --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" --verify-tag --prerelease \
+            --title "$version · Windows + 原生 Mac 开发预览" --notes-file docs/RELEASE_NOTES.md

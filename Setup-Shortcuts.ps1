@@ -1,15 +1,13 @@
 #requires -Version 7.6
 [CmdletBinding()]
-param([switch]$WithAI)
+param([switch]$WithAI, [switch]$WithoutScopes)
 $ErrorActionPreference='Stop'
 if(-not $IsWindows){throw 'Desktop launchers are supported on Windows only.'}
 $desktop=[Environment]::GetFolderPath('DesktopDirectory')
 $shell=New-Object -ComObject WScript.Shell
 $pwsh=(Get-Command pwsh -ErrorAction Stop).Source
-$entries=@(
- @{Name='Capture One + AI';Script='Start-CaptureOne.ps1'},
- @{Name='Capture One 图像分析';Script='Scopes.ps1'}
-)
+$entries=@(@{Name='Capture One + AI';Script='Start-CaptureOne.ps1'})
+if(-not $WithoutScopes){$entries+=@{Name='Capture One 图像分析';Script='Scopes.ps1'}}
 if($WithAI){$entries+=@{Name='Capture One AI 修图';Script='AI.ps1'}}
 foreach($entry in $entries){
  $script=Join-Path $PSScriptRoot $entry.Script

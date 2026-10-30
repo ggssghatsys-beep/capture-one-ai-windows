@@ -69,6 +69,22 @@ def test_reference_contract_and_delta(tmp_path):
     assert service.dispatch({'action':'get','analysis_id':old['analysis_id']},lambda a,b:None)['freshness']['state']=='stale'
 
 
+def test_reference_render_basis_tracks_source_and_profiles_not_job_versions():
+    pixels=decode(image(np.full((4,4,3),128,dtype=np.uint8)))
+    base={'photo_key':'photo','source':'capture_one_native_render','policy':{},'analysis_size':[4,4],
+          'color':{},'crop_signature':'crop','region':analyze(pixels),'analysis_id':'old'}
+    # Old exact snapshots remain comparable with the explicitly named native job.
+    assert compare(base,{**base,'render_basis':{'sample_source':'native_job'}})['statistics']['red']['mean_percent']==0
+    stamp={'proof_profile':'proof-a','display_profile':'display-a','job_change_version':1,'renderer_change_version':2}
+    viewer={**base,'sample_source':'viewer_cache','viewer_stamp':stamp}
+    assert compare(viewer,{**viewer,'viewer_stamp':{**stamp,'job_change_version':3,'renderer_change_version':4}})['statistics']['red']['mean_percent']==0
+    for changed in (base,
+                    {**viewer,'viewer_stamp':{**stamp,'proof_profile':'proof-b'}},
+                    {**viewer,'render_basis':{'sample_source':'viewer_cache','proof_profile':'proof-a','display_profile':'display-b'}},
+                    {**viewer,'viewer_stamp':{}}):
+        with pytest.raises(ValueError,match='render_basis'):compare(viewer,changed)
+
+
 def test_late_result_not_published(tmp_path,monkeypatch):
     file=tmp_path/'test.png';data=image(np.zeros((8,8,3),dtype=np.uint8));file.write_bytes(data)
     service=AnalysisService(None,tmp_path/'state')
@@ -188,6 +204,44 @@ def test_native_bgra_rows_channels_match_png():
     assert p.metadata['pixel_sha256']==decode(image(rgb)).metadata['pixel_sha256']
     assert analyze(p)==analyze(decode(image(rgb)))
     with pytest.raises(ValueError):decode(raw[:-1],raw=meta)
+
+
+def test_display_and_exact_snapshots_never_change_precision_on_get(tmp_path):
+    file=tmp_path/'test.png';file.write_bytes(image(np.full((100,1000,3),90,dtype=np.uint8)))
+    service=AnalysisService(None,tmp_path/'state');request={'source':'file','path':str(file),'include_statistics':False}
+    display=service.dispatch({**request,'precision':'display'},lambda a,b:None)['analysis']
+    exact=service.dispatch(request,lambda a,b:None)['analysis']
+    assert display['analysis_size']==[640,64] and exact['analysis_size']==[1000,100]
+    assert display['precision']=='display' and exact['precision']=='exact'
+    assert display['analysis_id']!=exact['analysis_id']
+    with pytest.raises(ValueError,match='fixed precision'):
+        service.dispatch({'action':'get','analysis_id':display['analysis_id'],'precision':'exact'},lambda a,b:None)
+    saved=service.dispatch({'action':'get','analysis_id':display['analysis_id'],'precision':'display'},lambda a,b:None)['analysis']
+    assert saved['pixel_sha256']==display['pixel_sha256'] and saved['precision']=='display'
+    with pytest.raises(ValueError,match='policy'):compare(exact,saved)
+
+
+def test_display_waveform_and_parade_preserve_position_without_av(monkeypatch):
+    import builtins
+    real_import=builtins.__import__
+    def no_av(name,*args,**kwargs):
+        if name=='av':raise AssertionError('display must not initialize PyAV')
+        return real_import(name,*args,**kwargs)
+    monkeypatch.setattr(builtins,'__import__',no_av)
+    rgb=np.zeros((40,80,3),dtype=np.uint8);rgb[:,40:]=255
+    pixels=decode(image(rgb),precision='display')
+    canvas=np.asarray(scope_image(pixels,mode='waveform'))
+    assert canvas[618:623,360:760].max()>canvas[65:70,360:760].max()
+    assert canvas[65:70,1400:1800].max()>canvas[618:623,1400:1800].max()
+    # ROI selects the white half; no leftover black-half trace.
+    roi=np.asarray(scope_image(pixels,[.5,0,1,1],mode='waveform'))
+    assert roi[65:70,360:1700].max()>200 and roi[618:622,360:1700].max()<100
+    pixels=decode(image(np.full((40,80,3),[240,128,64],dtype=np.uint8)),precision='display')
+    parade=np.asarray(scope_image(pixels,mode='parade'))
+    for channel,(low,high) in enumerate(((94,102),(338,347),(479,488))):
+        x=112+int((channel+.5)*1888/3)
+        y=int(parade[65:623,x-5:x+5,channel].max(axis=1).argmax()+65)
+        assert low<=y<=high
 
 
 @pytest.mark.skipif(not importlib.util.find_spec('av'),reason='PyAV not installed')

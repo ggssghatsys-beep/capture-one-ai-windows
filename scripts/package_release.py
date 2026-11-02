@@ -12,9 +12,11 @@ PUBLIC_FILES = [
     '.gitignore', '.gitattributes', 'README.md', 'AGENTS.md', 'LICENSE', 'THIRD_PARTY_NOTICES.md',
     'third_party/openrv-web-MIT.txt', 'docs/SCOPES_REUSE.md',
     'pyproject.toml', 'requirements-runtime.txt', 'Install.ps1', 'Start-CaptureOne.ps1', 'Run.ps1',
-    'config/native-profile.json', 'config/mcp-server.example.json',
+    'config/native-profile.json', 'config/mcp-server.example.json', 'config/bridge-compatibility.json',
+    'MCP.ps1', 'internal/resolve.ps1', 'internal/project.ps1',
+    'scripts/prepare_bridge.py', 'scripts/check_portable_install.py', 'docs/PORTABLE_BRIDGE.md',
     'docs/INSTALL.md', 'docs/AI_CLIENTS.md', 'docs/API.md', 'docs/COLOR_API.md',
-    'docs/NAVIGATION_PREVIEW.md', 'docs/SUPPORT.md', 'docs/ARCHITECTURE.md',
+    'docs/NAVIGATION_PREVIEW.md', 'docs/PREVIEW_COLOR.md', 'docs/SUPPORT.md', 'docs/ARCHITECTURE.md',
     'docs/DEVELOPMENT.md', 'docs/MAC_PORT.md', 'docs/MAC_STATUS.md', 'docs/RELEASE_CHECKS.md',
     'c1ai/native/uia.ps1',
     'internal/StartupHook.cs', 'internal/NativeEngine.cs', 'internal/start.ps1', 'internal/build.ps1',
@@ -33,6 +35,12 @@ PUBLIC_FILES = [
 
 def public_files():
     paths = {ROOT / p for p in PUBLIC_FILES}
+    compatibility = json.loads((ROOT / 'config/bridge-compatibility.json').read_text('utf-8'))
+    for adapter in compatibility['adapters']:
+        profile = (ROOT / adapter['profile']).resolve()
+        if not profile.is_relative_to(ROOT / 'config') or profile.suffix != '.json':
+            raise ValueError('Adapter qualification profile must be a JSON file inside config')
+        paths.add(profile)
     for directory in ('c1ai', 'tests'):
         paths.update(p for p in (ROOT / directory).rglob('*')
                      if p.is_file() and '__pycache__' not in p.parts and p.suffix in ('.py', '.ps1', '.js', '.json', '.icc'))
@@ -62,13 +70,11 @@ def main():
     name = 'CaptureOne-AI-' + version + '-Source'
     paths = public_files()
     privacy_check(paths)
+    # Native builds now include host/runtime/adapter identity. Ship the complete
+    # source pair; compile against the destination machine instead of copying a
+    # developer's host-specific cached DLLs.
     binaries = []
-    for source in ('StartupHook', 'NativeEngine'):
-        source_hash = hashlib.sha256((ROOT / 'internal' / (source + '.cs')).read_bytes()).hexdigest()
-        binary = ROOT / 'internal/bin' / source_hash[:16] / ('C1AI.' + source + '.' + source_hash[:12] + '.dll')
-        if binary.is_file():
-            paths.append(binary)
-            binaries.append(binary.relative_to(ROOT).as_posix())
+    compatibility = json.loads((ROOT / 'config/bridge-compatibility.json').read_text('utf-8'))
     manifest = {'version': version, 'capture_one_version': '16.8.6.3784',
                 'platforms': {'windows': {'capture_one_version': '16.8.6.3784'},
                               'macos': {'capture_one_version': '16.8.6.25', 'architecture': 'arm64', 'status': 'experimental'}},
@@ -85,6 +91,9 @@ def main():
             archive.write(path, name + '/' + path.relative_to(ROOT).as_posix())
         archive.writestr(name + '/RELEASE-MANIFEST.json', json.dumps(manifest, indent=2) + '\n')
     digest = hashlib.sha256(destination.read_bytes()).hexdigest()
+    update_manifest = {**compatibility, 'core_version': version,
+                       'package': {'name': destination.name, 'sha256': digest}}
+    (output / 'BRIDGE-COMPATIBILITY.json').write_text(json.dumps(update_manifest, indent=2) + '\n', encoding='utf-8')
     (output / 'SHA256SUMS.txt').write_text(digest + '  ' + destination.name + '\n', encoding='utf-8')
     print(json.dumps({'path': str(destination), 'bytes': destination.stat().st_size,
                       'files': len(paths) + 1, 'sha256': digest,

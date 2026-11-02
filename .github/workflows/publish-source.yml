@@ -45,6 +45,6 @@ jobs:
           if [ -z "$tag_commit" ]; then
             gh api --method POST "repos/$GITHUB_REPOSITORY/git/refs" -f ref="refs/tags/$tag" -f sha="$GITHUB_SHA" --silent
           fi
-          gh release create "$tag" dist/*-Source.zip dist/SHA256SUMS.txt \
+          gh release create "$tag" dist/*-Source.zip dist/SHA256SUMS.txt dist/BRIDGE-COMPATIBILITY.json \
             --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" --verify-tag --prerelease \
             --title "$version · Windows + 原生 Mac 开发预览" --notes-file docs/RELEASE_NOTES.md

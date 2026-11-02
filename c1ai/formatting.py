@@ -9,7 +9,7 @@ _LOCATORS = {"raw_state", "nodes", "node", "selector", "selectors", "bindings",
 _OBSERVATION = {"status", "target", "values", "evidence", "observation_token",
                 "source", "scope", "limits", "model_verified", "render_verified",
                 "error", "errors", "warnings", "missing", "module", "state", "guidance",
-                "module_capability", "submask_inventory", "gradient_view"}
+                "module_capability", "submask_inventory", "gradient_view", "session_binding"}
 _WRITE = {"operation_id", "request_id", "status", "progress", "after", "target",
           "result", "error", "errors", "model_verified", "model_commit_verified",
           "render_verified", "control_readback_verified", "quality_approved", "evidence",

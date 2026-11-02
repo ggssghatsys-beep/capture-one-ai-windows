@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "capture-one-ai-rebuild"
-version = "0.4.0a1"
+version = "0.4.0a2"
 description = "Native Capture One local owner for Windows and experimental macOS, with CLI/MCP clients and scopes"
 readme = "README.md"
 license = "MIT"
@@ -25,7 +25,7 @@ ai = ["openai>=2.30,<4", "PySide6-Essentials>=6.8,<7", "keyring>=25.6,<26; sys_p
 [project.scripts]
 c1ai = "c1ai.__main__:main"
 c1ai-mcp = "c1ai.mcp_server:main"
-c1ai-scopes = "c1ai.scopes_window:main"
+c1ai-scopes = "c1ai.scopes_launch:main"
 c1ai-ai = "c1ai.ai_window:main"
 
 [tool.setuptools]

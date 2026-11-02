@@ -219,6 +219,13 @@ class NativeBridge:
             return self._deliver_artifact(result, native, target, kind, raw, started)
 
     def _deliver_artifact(self, result, native, target, kind, raw, started):
+        from .render_color import require_native_srgb, tagged_native_png
+        encoding = None
+        if kind == "native":
+            try:
+                encoding = require_native_srgb(result["artifact"].get("color_encoding"))
+            except ValueError as error:
+                raise Refused("native_color_unverified", str(error)) from error
         source = Path(result["artifact"]["path"])
         extension = ".bgra" if raw else ".png"
         if source.parent.resolve() != self.root.resolve() or source.name != result["preview_id"] + extension:
@@ -247,6 +254,8 @@ class NativeBridge:
                     if (ImageChops.difference(red, green).getbbox() or ImageChops.difference(green, blue).getbbox()
                             or alpha.getextrema() != (255, 255)):
                         raise Refused("native_mask_unqualified", "Native mask renderer did not return opaque grayscale coverage")
+            if encoding:
+                data = tagged_native_png(data, encoding)
         sha = hashlib.sha256(data).hexdigest()
         archive = self.state_dir / "native-previews"; secure_directory(archive)
         path = archive / (sha + extension)
@@ -275,6 +284,7 @@ class NativeBridge:
                     "viewer_stamp": result.get("viewer_stamp")} if result.get("sample_source") else {}),
                 "color_profile": ("C1 display/proofed Viewer cache converted to sRGB" if result.get("sample_source") == "viewer_cache"
                                   else "C1 native sRGB output"),
+                "color_encoding": encoding,
                 "crop_evidence": "C1 VariantGeometryTransformer.canvasCropRect + native bitmap job"}
 
     def create_gradient(self, target, native, operation_id, mask_uuid, kind, parameters):

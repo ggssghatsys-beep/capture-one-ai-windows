@@ -43,16 +43,57 @@ def _executable_version(executable):
     return {'version': text, 'file_version': text, 'version_source': 'FileVersionParts'}
 
 
-def find_native_main(configured_session_title, expected_executable=None, *, limit=2048):
+def _capture_one_process_ids():
+    """Process names from Toolhelp; no need to open unrelated protected processes."""
+    from .windows_backend import NativeError
+    class ProcessEntry(ctypes.Structure):
+        _fields_ = [('dwSize', W.DWORD), ('cntUsage', W.DWORD), ('th32ProcessID', W.DWORD),
+                    ('th32DefaultHeapID', ctypes.c_size_t), ('th32ModuleID', W.DWORD),
+                    ('cntThreads', W.DWORD), ('th32ParentProcessID', W.DWORD),
+                    ('pcPriClassBase', W.LONG), ('dwFlags', W.DWORD), ('szExeFile', W.WCHAR * 260)]
+    kernel = ctypes.WinDLL('kernel32', use_last_error=True)
+    kernel.CreateToolhelp32Snapshot.argtypes = [W.DWORD, W.DWORD]
+    kernel.CreateToolhelp32Snapshot.restype = W.HANDLE
+    for name in ('Process32FirstW', 'Process32NextW'):
+        method = getattr(kernel, name)
+        method.argtypes = [W.HANDLE, ctypes.POINTER(ProcessEntry)]
+        method.restype = W.BOOL
+    kernel.CloseHandle.argtypes = [W.HANDLE]
+    snapshot = kernel.CreateToolhelp32Snapshot(2, 0)
+    if snapshot == ctypes.c_void_p(-1).value:
+        raise NativeError('PROCESS_DISCOVERY_FAILED', 'Cannot enumerate C1 process names')
+    result = set()
+    try:
+        entry = ProcessEntry()
+        entry.dwSize = ctypes.sizeof(entry)
+        present = kernel.Process32FirstW(snapshot, ctypes.byref(entry))
+        while present:
+            if entry.szExeFile.casefold() in {'captureone.exe', 'capture one.exe'}:
+                result.add(entry.th32ProcessID)
+            present = kernel.Process32NextW(snapshot, ctypes.byref(entry))
+        if ctypes.get_last_error() != 18:
+            raise NativeError('PROCESS_DISCOVERY_FAILED', 'C1 process enumeration was incomplete')
+        return result
+    finally:
+        kernel.CloseHandle(snapshot)
+
+
+def find_native_main(configured_session_title=None, expected_executable=None, *, limit=2048, main_hwnd=None, expected_pid=None):
     """Find one exact native C1 main window without a selected image or UIA.
 
     This identifies a window/process, not an open Session path or photo UUID.
     The owner must still establish those identities before enabling any write.
     """
     from .windows_backend import NativeError
-    if (not isinstance(configured_session_title, str) or not configured_session_title
-            or len(configured_session_title) >= 512 or type(limit) is not int or not 1 <= limit <= 4096):
+    if ((configured_session_title is not None and (not isinstance(configured_session_title, str)
+            or not configured_session_title or len(configured_session_title) >= 512))
+            or type(limit) is not int or not 1 <= limit <= 4096
+            or (main_hwnd is not None and (type(main_hwnd) is not int or main_hwnd <= 0))
+            or (expected_pid is not None and (type(expected_pid) is not int or expected_pid <= 0))
+            or (configured_session_title is None and expected_pid is None)):
         raise NativeError('INVALID_WINDOW_REQUEST', 'A bounded exact Session title and enumeration limit are required')
+    if expected_pid is not None and _capture_one_process_ids() != {expected_pid}:
+        raise NativeError('APP_INSTANCE_REQUIRED', 'Exactly one Capture One process must match the authenticated bridge')
     expected = str(Path(expected_executable).resolve()) if expected_executable is not None else None
     u = ctypes.WinDLL('user32', use_last_error=True)
     callback_type = ctypes.WINFUNCTYPE(W.BOOL, W.HWND, W.LPARAM)
@@ -78,11 +119,13 @@ def find_native_main(configured_session_title, expected_executable=None, *, limi
             return None
         title = ctypes.create_unicode_buffer(512)
         size = u.GetWindowTextW(hwnd, title, len(title))
-        if size >= len(title) - 1 or title.value != configured_session_title:
+        if size >= len(title) - 1 or (configured_session_title is not None and title.value != configured_session_title):
             return None
         pid = W.DWORD()
         if not u.GetWindowThreadProcessId(hwnd, ctypes.byref(pid)) or pid.value <= 0:
             raise NativeError('WINDOW_UNAVAILABLE', 'Matching main window process could not be read')
+        if expected_pid is not None and pid.value != expected_pid:
+            return None
         return {'pid': pid.value, 'hwnd': int(hwnd), 'title': title.value, 'visible': True,
                 'minimized': bool(u.IsIconic(hwnd)), 'enabled': bool(u.IsWindowEnabled(hwnd))}
 
@@ -113,6 +156,10 @@ def find_native_main(configured_session_title, expected_executable=None, *, limi
     if not succeeded or truncated or failures:
         raise NativeError('MAIN_WINDOW_DISCOVERY_INCOMPLETE', 'Native main-window discovery was not complete',
                           {'truncated': truncated, 'read_errors': failures})
+    # An authenticated bridge identifies its main HWND. Multiple C1 processes
+    # still require an explicit choice, even if one owns the responding pipe.
+    if main_hwnd is not None and len({row[0]['pid'] for row in matches}) <= 1:
+        matches = [row for row in matches if row[0]['hwnd'] == main_hwnd]
     if len(matches) != 1:
         raise NativeError('APP_INSTANCE_REQUIRED', 'Exactly one native Capture One main window must match the Session title and executable',
                           {'matching_windows': [row[0] for row in matches]})

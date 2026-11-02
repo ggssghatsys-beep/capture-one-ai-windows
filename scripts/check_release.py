@@ -1,12 +1,16 @@
 """Read-only stdio smoke check. Never adjusts, clones, selects or exports a photo."""
 import argparse
 import asyncio
+import base64
+import io
 import json
 import os
 import sys
 import tempfile
 from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
+from PIL import Image
+from c1ai.render_color import NATIVE_COLOR_POLICY
 
 
 def data(result):
@@ -39,11 +43,16 @@ async def check(require_live=False):
                 'target': before['target'], 'observation_token': before['observation_token']})
             assert data(preview)['status'] == 'completed', data(preview).get('error')
             assert any(c.type == 'image' and c.mimeType == 'image/png' for c in preview.content)
+            assert data(preview)['result']['color_encoding']['policy'] == NATIVE_COLOR_POLICY
+            png = next(c for c in preview.content if c.type == 'image' and c.mimeType == 'image/png')
+            with Image.open(io.BytesIO(base64.b64decode(png.data, validate=True))) as image:
+                assert image.info.get('icc_profile'), 'Native preview must embed its sRGB ICC'
             analysis = await session.call_tool('analyze_image', {'target': before['target'],
                 'include_image': 'histogram', 'include_histograms': True, 'include_vectorscope': True})
             measured = data(analysis)
             assert measured['freshness']['state'] == 'ready', measured
             assert measured['analysis']['target'] == before['target']
+            assert measured['analysis']['color']['confirmation'] == 'verified_native_srgb_output'
             assert any(c.type == 'image' and c.mimeType == 'image/png' for c in analysis.content)
             assert sum(measured['analysis']['region']['histograms']['luma']) == measured['analysis']['region']['pixel_count']
             vector_image=await session.call_tool('analyze_image', {'action':'get',

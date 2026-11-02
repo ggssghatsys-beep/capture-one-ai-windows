@@ -146,12 +146,14 @@ extern NSUInteger CGImageGetBitsPerComponent(void *), CGImageGetBitsPerPixel(voi
 extern unsigned int CGImageGetBitmapInfo(void *);
 extern void *CGImageGetDataProvider(void *), *CGDataProviderCopyData(void *);
 extern void *CGImageGetColorSpace(void *);
+extern void *CGColorSpaceCopyICCData(void *);
 extern const unsigned char *CFDataGetBytePtr(void *);
 extern long CFDataGetLength(void *);
 extern void CFRelease(void *);
 extern void *const kCGColorSpaceSRGB;
 extern void *CGColorSpaceCreateWithName(void *);
 extern void *CGBitmapContextCreate(void *, NSUInteger, NSUInteger, NSUInteger, NSUInteger, void *, unsigned int);
+extern void *CGBitmapContextCreateImage(void *);
 extern void CGContextSetRGBFillColor(void *, double, double, double, double);
 extern void CGContextFillRect(void *, CGRect);
 extern void CGContextSetInterpolationQuality(void *, int);

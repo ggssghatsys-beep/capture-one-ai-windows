@@ -73,6 +73,8 @@ class Journal:
     @staticmethod
     def _observation_identity(observation):
         identity = {"target": observation["target"], "values": observation["values"]}
+        if observation.get('session_binding') is not None:
+            identity['session_binding'] = observation['session_binding']
         if observation.get("module"):
             identity["module"] = observation["module"]
         if (observation.get("module") in {"layers", "masks", "color_mixer"}
@@ -216,6 +218,15 @@ class Journal:
                 if request.get('command') == 'images':
                     pending = []  # Ordinary unresolved edits do not block navigation.
             if native and request.get('command')=='adjust':
+                if (not mac_native and request.get('module')=='layers'
+                        and request.get('patch',{}).get('action')=='select'):
+                    # Returning to the exact layer of an uncertain deterministic
+                    # mask edit permits readback; selecting elsewhere stays blocked.
+                    destination={**target,'layer':request['patch']['layer_ref']}
+                    pending=[r for r in pending if not (r.get('target')==destination
+                        and r.get('request',{}).get('command')=='adjust'
+                        and r['request'].get('module')=='masks'
+                        and r['request'].get('patch',{}).get('action') in {'radial_gradient','luma_range','linear_gradient'})]
                 pending=[r for r in pending if structural and r.get('target',{}).get('instance')==target.get('instance')
                     and r.get('target',{}).get('variant',{}).get('id')==target.get('variant',{}).get('id')
                     and is_structural(r.get('request',{}))]

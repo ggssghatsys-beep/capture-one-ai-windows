@@ -1,0 +1,18 @@
+{
+  "schema": 1,
+  "revision": 1,
+  "protocol": 1,
+  "color_policy": "native-srgb-v1",
+  "adapters": [
+    {
+      "id": "windows-16.8.6.3784-srgb1",
+      "platform": "windows",
+      "architecture": "x64",
+      "capture_one_version": "16.8.6.3784",
+      "runtime_major": 10,
+      "profile": "config/native-profile.json",
+      "qualification": "bounded_live_verified",
+      "evidence": "docs/PREVIEW_COLOR.md"
+    }
+  ]
+}

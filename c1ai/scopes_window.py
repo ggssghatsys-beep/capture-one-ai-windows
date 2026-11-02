@@ -62,6 +62,7 @@ class ScopeWindow(QWidget):
         self.generation=0; self.worker=None; self.paused=False; self.pending=None
         self.tray=None;self.suspended=False;self.exiting=False
         self.path=path; self.record=None; self.reference=None; self.pixmap=QPixmap();self.displayed_id=None
+        self.source_binding=None
         self.region_dialog=None;self.pending_region=None
         self.next_delay=100;self.latency_log=deque(maxlen=32);self.artifact_key=None;self.artifact_kind=None
         font = 'PingFang SC' if sys.platform == 'darwin' else 'Microsoft YaHei UI'
@@ -254,6 +255,33 @@ class ScopeWindow(QWidget):
     def receive(self,generation,result):
         if generation!=self.generation:return
         received=time.perf_counter()
+        sample_binding=(result.get('analysis') or {}).get('session_binding')
+        binding=result.get('current_session_binding') or sample_binding
+        if not self.path and binding is not None:
+            previous=self.source_binding
+            self.source_binding=binding
+            if previous is not None and previous!=binding:
+                # A Session boundary invalidates the old frame, pinned reference,
+                # and image-bound ROI, even when the same photo is reopened.
+                self.generation+=1;self.pending=None;self.record=None;self.reference=None
+                self.displayed_id=None;self.artifact_key=None;self.artifact_kind=None;self.pixmap=QPixmap()
+                self.canvas.clear();self.canvas.setText('正在连接当前 Session')
+                self.stats.clear();self.identity.setText(Path(binding['path']).stem)
+                if self.region_dialog:self.region_dialog.close();self.region_dialog=None
+                self.pending_region=None
+                for box,value in zip(self.roi,[0,0,1,1]):
+                    box.blockSignals(True);box.setValue(value);box.blockSignals(False)
+                self.next_delay=50
+                self.state.setText('Session 已切换，正在重新取样')
+                return
+            if sample_binding is not None and sample_binding!=binding:
+                self.record=None;self.reference=None;self.displayed_id=None
+                self.artifact_key=None;self.pixmap=QPixmap();self.canvas.clear()
+                self.canvas.setText('等待当前 Session 取样');self.stats.clear()
+                self.identity.setText(Path(binding['path']).stem)
+                self.state.setText('等待当前 Session 取样')
+                self.next_delay=refresh_delay_ms(result)
+                return
         if result.get('_purpose')=='apply_roi':
             if result.get('freshness',{}).get('state') in ('ready','empty') and self.pending_region is not None:
                 for box,value in zip(self.roi,self.pending_region):
@@ -295,7 +323,8 @@ class ScopeWindow(QWidget):
         target=data['target'];label=(target.get('variant') or {}).get('label') or Path(target['image']['path']).name
         revision=data.get('revision');size=data['analysis_size']
         layer=data.get('mask_layer',{}).get('name','整图')
-        self.identity.setText(f"{label} · {layer} · 快速样本 · {size[0]} × {size[1]} · 修订 {revision}\n分析编号 {data['analysis_id']}（display）")
+        session_name=Path(data['session_binding']['path']).stem+' · ' if data.get('session_binding') else ''
+        self.identity.setText(f"{session_name}{label} · {layer} · 快速样本 · {size[0]} × {size[1]} · 修订 {revision}\n分析编号 {data['analysis_id']}（display）")
         stats=data['region'].get('statistics',{}).get('luma')
         line='快速样本用于观察趋势；数值按按钮读取。AI 可另取 exact 精确样本。'
         if stats:
@@ -447,6 +476,8 @@ class SingleWindow:
 
 
 def main():
+    from .scopes_launch import forward_selected_window
+    if forward_selected_window(sys.argv[1:]):return 0
     parser=argparse.ArgumentParser(description=__doc__);parser.add_argument('--file')
     parser.add_argument('--mode',choices=list(VIEWS))
     parser.add_argument('--if-enabled',action='store_true')

@@ -16,11 +16,11 @@ MCP 新增 `analysis_scope: "active_layer"`；省略或 `"image"` 保留旧整�
 
 最新窗口采用一行工具栏＋图表，可缩小到 320×160；400×220 已检查。照片身份、ROI、详细数值、色彩假设移到“更多 → 区域、数值与状态”，主界面只用状态点及悬停提示提示等待／过期／失败。图表随窗口伸缩，统计范围和分析尺寸不随窗口变化。
 
-色彩空间下拉框提供 **sRGB、Adobe RGB (1998)、Display P3**，并记住选择。`analyze_image` 同步支持 `color_space: srgb | adobe_rgb | display_p3`，缺省保持 sRGB；读取保存编号时保留该编号的原色彩空间，不能重解释。空间切换经 ImageCms 实际转换，不修改 C1 工作色彩设置。ICC 文件直接转换到目标空间，避免先缩进 sRGB；无源 ICC 时仍假定源为 sRGB，选择宽色域不能恢复预览中缺失的颜色。各空间按自己的 RGB-to-XYZ Y 权重和传递函数统计，跨空间拒绝直接比较参考差值。
+色彩空间下拉框提供 **sRGB、Adobe RGB (1998)、Display P3**，并记住选择。`analyze_image` 同步支持 `color_space: srgb | adobe_rgb | display_p3`，缺省保持 sRGB；读取保存编号时保留该编号的原色彩空间，不能重解释。空间切换经 ImageCms 实际转换，不修改 C1 工作色彩设置。外部 ICC 文件直接转换到目标空间；无 ICC 的外部文件仍假定 sRGB。原生照片取样要求经过已确认的 sRGB 输出转换，缺少色彩凭据会拒绝分析。选择宽色域不能恢复该预览中已缺失的颜色。各空间按自己的 RGB-to-XYZ Y 权重和传递函数统计，跨空间拒绝直接比较参考差值。
 
 Adobe RGB 使用 563/256 gamma；Display P3 使用 D65 白点及 sRGB 传递函数，不是影院 DCI-P3 或 HDR P3。ICC 参数配置由 Qt QColorSpace 的标准命名空间生成，随源码安装于 `c1ai/profiles/`，运行转换无需 Qt。定义参照 [Adobe RGB 官方规格](https://www.adobe.com/digitalimag/pdfs/AdobeRGB1998.pdf) 和 [W3C CSS Color 4](https://www.w3.org/TR/css-color-4/#predefined-display-p3)。主波形图为相应编码 RGB 加权的 Y′近似，AI 元数据给出具体权重；线性光 Y 另外返回。
 
-最新分析来源采用 C1 原生位图的 **BGRA8 无压缩缓冲**；Windows 通过 `ToBitmapSourceDeepCopy`／`CopyPixels` 取得完整渲染像素，Mac 通过已配置的原生桥读取像素，按图片和修订校验后传给共享分析核心，不经 PNG 编解码。内部使用有上限的 `.bgra` 本机缓存传递，尚非跨进程零拷贝。旧 `preview(kind=native)` 继续返回 PNG，独立缓存保证分析取图不会使该 PNG 的坐标映射编号失效。下文 PNG 格式记录是初始路线证据；新路线仍为每通道 8 位。Mac 快速 Viewer 样本通过原生 ICC 转成 sRGB；独立渲染尚未独立标定源色彩。
+最新分析来源采用 C1 原生位图的 **BGRA8 无压缩缓冲**；Windows 通过 `ToBitmapSourceDeepCopy`／`CopyPixels` 取得完整渲染像素，Mac 通过已配置的原生桥读取像素，按图片和修订校验后传给共享分析核心，不经 PNG 编解码。内部使用有上限的 `.bgra` 本机缓存传递，尚非跨进程零拷贝。旧 `preview(kind=native)` 继续返回 PNG，独立缓存保证分析取图不会使该 PNG 的坐标映射编号失效。下文 PNG 格式记录是初始路线证据；新路线仍为每通道 8 位。照片的 PNG 与 BGRA8 共用 `native-srgb-v1` 色彩约定，原生缓冲不再静默假定为 sRGB。实现、跨机器升级和 Mac 待验收范围见 [预览色彩说明](PREVIEW_COLOR.md)。
 
 Mac 窗口 `display` 优先读取当前原生 Viewer 的完整裁切缓存，严格核对修订、身份、完成状态和覆盖；无法取得合格缓存时才提交原生位图任务。Viewer 显示／校样效果已烘焙，CoreGraphics 转成 sRGB 后仍包含该效果，返回 `sample_source=viewer_cache` 和 `sample_limitation`；独立原生渲染返回 `sample_source=native_job`。`exact` 不读取 Viewer 缓存。参考比较额外核对稳定 `render_basis`（来源及 Viewer proof/display profile），避免把显示口径变化当成调色变化。详细面板明确标出快速样本和校样限制。
 
@@ -68,7 +68,7 @@ NumPy、Pillow/ImageCms 处理数值及色彩；PySide6-Essentials 提供窗口�
 
 原生取图调用已有 `GetICProcessSettings`、`VariantGeometryTransformer.CropRawConstrained` 和 `ProcessToBitmapScheduledAsync`；C# 增加处理修订读取和原生 BGRA 缓冲回传，旧 PNG 预览保持兼容。输出由 C1 应用曝光、白平衡、曲线、局部调整及真实裁剪。查看器缩放／平移不是输入参数。
 
-初始路线在本机取得 **PNG / RGBA / 每通道 8 位 / 1067×1600 / 无嵌入 ICC**。现在 `exact` 分析长边不超过 1600，窗口 `display` 快速样本不超过 640，均不放大小图。原生图像仍是预览，不是 RAW 像素，也不承诺更高位深。没有 ICC 时明确标注“假定 sRGB，色彩未独立确认”；带 ICC 的文件用 ImageCms 相对色度意图转到 sRGB。用于返回给 AI 的规范化 PNG 带 sRGB ICC，但原始色彩假设仍保留在元数据，不能由此冒充源图色彩已确认。
+初始路线在本机取得 **PNG / RGBA / 每通道 8 位 / 1067×1600 / 无嵌入 ICC**。现在 `exact` 分析长边不超过 1600，窗口 `display` 快速样本不超过 640，均不放大小图。原生图像仍是预览，不是 RAW 像素，也不承诺更高位深。上述无 ICC 假设是初始路线的历史范围；当前原生取样检查色彩凭据并记录 `verified_native_srgb_output`。外部文件没有 ICC 时仍明确假定 sRGB，带 ICC 时经 ImageCms 转换。用于返回给 AI 的规范化 PNG 带 sRGB ICC，但原始色彩假设仍保留在元数据，不能由此冒充源图色彩已确认。
 
 Capture Pilot 是另一条候选路线：根据 LiveLegacy 实现了诊断探针，但本机探测端口实际连接被拒绝，未作为生产数据源，也不宣称 Windows 支持 Live for Studio。现有原生内核路线已满足直接取图，不要求用户打开 HTTP 服务或反复导出。
 

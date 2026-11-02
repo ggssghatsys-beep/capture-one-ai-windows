@@ -95,9 +95,9 @@ public static class C1NativeEngine
         var selection=Selection(document);var selected=Member(selection,"SelectedVariants");
         if(Convert.ToInt32(Member(selected,"Count"))!=1||Member(Member(selection,"PrimaryVariant"),"UUID")?.ToString()!=Member(variant,"UUID")?.ToString())throw new InvalidOperationException("exactly one matching primary variant required");
         if(expected.TryGetProperty("layer_uuid",out var layer)&&LayerId(variant)!=layer.GetString())throw new InvalidOperationException("native active layer changed");
+        if(!expected.TryGetProperty("document_uuid",out var expectedDocumentUuid)||expectedDocumentUuid.GetString()!=Member(document,"UUID")?.ToString())throw new InvalidOperationException("native document UUID changed");
         if(write)
         {
-            if(!expected.TryGetProperty("document_uuid",out var documentUuid)||documentUuid.GetString()!=Member(document,"UUID")?.ToString())throw new InvalidOperationException("native document UUID changed");
             using var registered=JsonDocument.Parse(File.ReadAllText(Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),"CaptureOneAI","candidates.json")));
             string uuid=Member(variant,"UUID")!.ToString()!;
             if(!registered.RootElement.TryGetProperty(uuid,out var record)||!string.Equals(record.GetProperty("document").GetProperty("path").GetString(),Member(document,"Path")?.ToString(),StringComparison.OrdinalIgnoreCase))throw new InvalidOperationException("writes require a registered test candidate");
@@ -348,10 +348,11 @@ public static class C1NativeEngine
         }
         return null;
     }
-    static object? Document(List<object> models)
+    static object? Document(List<object> models,bool allowCached=true)
     {
         var basic=models.FirstOrDefault(o=>Name(o).Contains("BasicColorEditorViewModel"));
         var document=Member(Member(basic,"m_colorCorrectionsPresenter"),"Document")??Member(Variant(models),"Document");
+        if(document!=null&&((IntPtr?)Member(document,"BoundWindowHandle"))!=System.Diagnostics.Process.GetCurrentProcess().MainWindowHandle)document=null;
         if(document==null)
         {
             var roots=models.Concat(System.Windows.Forms.Application.OpenForms.Cast<Form>().Where(f=>f.Handle==System.Diagnostics.Process.GetCurrentProcess().MainWindowHandle).Cast<object>());
@@ -362,10 +363,11 @@ public static class C1NativeEngine
                 if(candidate!=null&&candidate.GetType().GetInterfaces().Any(t=>t.FullName=="P1.C1.Core.ModelEntities.ICaptureOneDocument")&&((IntPtr?)Member(candidate,"BoundWindowHandle"))==System.Diagnostics.Process.GetCurrentProcess().MainWindowHandle){document=candidate;break;}
             }
         }
+        if(document!=null&&((IntPtr?)Member(document,"BoundWindowHandle"))!=System.Diagnostics.Process.GetCurrentProcess().MainWindowHandle)document=null;
         if(document!=null)cachedDocument=document;
-        return document??cachedDocument;
+        return document??(allowCached?cachedDocument:null);
     }
-    static object Target(object? variant,object? document)=>new {variant_uuid=Member(variant,"UUID")?.ToString(),variant_type=variant?.GetType().FullName,document_path=Member(document,"Path")?.ToString(),document_uuid=Member(document,"UUID")?.ToString()};
+    static object Target(object? variant,object? document)=>new {variant_uuid=Member(variant,"UUID")?.ToString(),variant_type=variant?.GetType().FullName,document_path=Member(document,"Path")?.ToString(),document_uuid=Member(document,"UUID")?.ToString(),main_hwnd=System.Diagnostics.Process.GetCurrentProcess().MainWindowHandle.ToInt64()};
     static void SelectOnly(object document,object chosen)
     {
         var selected=Member(Selection(document),"SelectedVariants")!;
@@ -491,6 +493,17 @@ public static class C1NativeEngine
         return string.Join(":",new[]{"HighResCounter","LowResCounter","SyncCounter"}.Select(k=>Member(counters,k)??throw new InvalidOperationException("native process counter missing")));
     }
     static void StructField(object value,string name,object? fieldValue)=>value.GetType().GetField(name)!.SetValue(value,fieldValue);
+    const string NativeColorPolicy="native-srgb-v1";
+    static (string Path,string Hash) NativeSRGBProfile()
+    {
+        // Resolve from this C1 installation, never from a user's monitor or recipe.
+        string path=Path.Combine(Path.GetDirectoryName(System.Diagnostics.Process.GetCurrentProcess().MainModule!.FileName)!,"Color Profiles","Common","sRGB Color Space Profile.icm");
+        if(!File.Exists(path))throw new InvalidOperationException("NATIVE_SRGB_PROFILE_UNAVAILABLE: C1 sRGB output profile is missing");
+        byte[] profile=File.ReadAllBytes(path);
+        if(profile.Length<128||profile.Length>16777216||System.Text.Encoding.ASCII.GetString(profile,36,4)!="acsp"||System.Text.Encoding.ASCII.GetString(profile,16,4)!="RGB ")
+            throw new InvalidOperationException("NATIVE_SRGB_PROFILE_INVALID: expected C1's RGB sRGB ICC profile");
+        return (path,Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(profile)).ToLowerInvariant());
+    }
     static object Preview(object document,object variant,JsonElement request)
     {
         RequireTarget(request,variant,document,false);
@@ -500,9 +513,12 @@ public static class C1NativeEngine
         if(kind!="native"&&kind!="mask"||size<128||size>1600)throw new InvalidOperationException("invalid native preview kind/size");
         string revision=ProcessRevision(variant);
         bool pixelBuffer=request.TryGetProperty("pixel_buffer",out var pb)&&pb.GetBoolean();
+        var outputProfile=kind=="native"?NativeSRGBProfile():(Path:"",Hash:"");
+        object colorEncoding=kind=="native"?(object)new {policy=NativeColorPolicy,space="srgb",conversion="c1_output_profile",profile_sha256=outputProfile.Hash}
+            :new {policy="mask-coverage-v1",space="coverage",conversion="none"};
         PreviewJob? currentJob=pixelBuffer?pixelPreviewJob:previewJob;
         if(pixelBuffer&&kind!="native")throw new InvalidOperationException("pixel buffer requires native photo render");
-        string key=Member(document,"UUID")+":"+Member(variant,"UUID")+":"+revision+":"+kind+":"+size+":"+LayerId(variant)+":"+pixelBuffer;
+        string key=Member(document,"UUID")+":"+Member(variant,"UUID")+":"+revision+":"+kind+":"+size+":"+LayerId(variant)+":"+pixelBuffer+":"+NativeColorPolicy+":"+outputProfile.Hash;
         if(action=="preview_start")
         {
             if(currentJob!=null&&!currentJob.Work.IsCompleted)
@@ -513,6 +529,15 @@ public static class C1NativeEngine
             {
                 // Snapshot all model data on C1's UI thread, then let C1's own scheduler render off-thread.
                 object settings=kind=="mask"?Invoke(Invoke(variant,"GetProcessSettingsNoLocalAdjLayers",true)!,"Get")!:Invoke(variant,"GetICProcessSettings")!;
+                if(kind=="native")
+                {
+                    // GetICProcessSettings initializes both ICC slots with the camera
+                    // profile. Only replace the destination in this rendering copy.
+                    var profiles=Member(settings,"colorProfileList")!;
+                    if(Convert.ToInt32(Member(profiles,"count"))!=2)throw new InvalidOperationException("NATIVE_COLOR_PIPELINE_UNQUALIFIED: expected input and output ICC slots");
+                    StructField(profiles,"profile2",Static("ImgCore.Utf8Marshaled_IC_MAX_PATH","Create",outputProfile.Path));
+                    StructField(settings,"colorProfileList",profiles);
+                }
                 var geometry=Static("P1.C1.Core.VariantGeometryTransformer","FromProcessSettings",settings)!;
                 var crop=Member(geometry,"CropRawConstrained")!;
                 float width=Convert.ToSingle(Member(crop,"Width")),height=Convert.ToSingle(Member(crop,"Height"));
@@ -536,7 +561,7 @@ public static class C1NativeEngine
                     object?[] args={settings,"C1 AI Preview",EnumValue("P1.C1.ImageCoreWrapper.ImageCore.ProcessQuality","PreviewHigh"),variant,document,bitmap,null,null,Enum.ToObject(method.GetParameters()[8].ParameterType,1),false};
                     var task=(Task)method.Invoke(null,args)!;
                     var job=new PreviewJob{Key=key,Revision=revision,Kind=kind,Geometry=geometry};
-                    job.Work=Task.Run(()=>FinishPreview(task,bitmap,settings,pixelBuffer));
+                    job.Work=Task.Run(()=>FinishPreview(task,bitmap,settings,pixelBuffer,colorEncoding));
                     currentJob=job;if(pixelBuffer)pixelPreviewJob=job;else previewJob=job;
                 }
                 catch{((IDisposable)bitmap).Dispose();throw;}
@@ -571,7 +596,7 @@ public static class C1NativeEngine
         return new {preview_id=current.Id,phase="ready",revision,artifact,kind=current.Kind,
             geometry=new {width=w,height=h,raw_dimensions=Member(variant,"ImageDimensions"),coordinate_convention="pixel edges; top-left origin; preview_map uses C1 nonlinear transform",raw_corners_and_center=Map(corners,"preview_to_raw"),source="VariantGeometryTransformer"}};
     }
-    static async Task<object> FinishPreview(Task render,object bitmap,object settings,bool pixelBuffer)
+    static async Task<object> FinishPreview(Task render,object bitmap,object settings,bool pixelBuffer,object colorEncoding)
     {
         string? temporary=null;
         try
@@ -596,7 +621,7 @@ public static class C1NativeEngine
                 string rawHash=Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(pixels)).ToLowerInvariant();
                 string rawPath=Path.Combine(rawRoot,rawHash+".bgra");
                 temporary=Path.Combine(rawRoot,Guid.NewGuid().ToString("N")+".tmp");File.WriteAllBytes(temporary,pixels);File.Move(temporary,rawPath,true);temporary=null;
-                return new {path=rawPath,sha256=rawHash,width,height,stride,format="BGRA8",row_order="top-down",bit_depth=8,bytes=pixels.Length,
+                return new {path=rawPath,sha256=rawHash,width,height,stride,format="BGRA8",row_order="top-down",bit_depth=8,bytes=pixels.Length,color_encoding=colorEncoding,
                     timing_seconds=new {render_wait=renderWait,pixel_copy=copyDone-renderWait,hash_and_write=timer.Elapsed.TotalSeconds-copyDone}};
             }
             string root=Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),"CaptureOneAI","native-previews");Directory.CreateDirectory(root);
@@ -604,7 +629,7 @@ public static class C1NativeEngine
             if(Convert.ToInt32(Invoke(bitmap,"DumpToFileAsPng",temporary))!=0)throw new InvalidOperationException("native PNG encoding failed");
             string hash=Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(File.ReadAllBytes(temporary))).ToLowerInvariant();
             string path=Path.Combine(root,hash+".png");File.Move(temporary,path,true);temporary=null;
-            return new {path,sha256=hash,width,height,format="PNG",bytes=new FileInfo(path).Length,
+            return new {path,sha256=hash,width,height,format="PNG",bytes=new FileInfo(path).Length,color_encoding=colorEncoding,
                 timing_seconds=new {render_wait=renderWait,png_encode_hash_write=timer.Elapsed.TotalSeconds-renderWait}};
         }
         finally{((IDisposable)bitmap).Dispose();GC.KeepAlive(settings);if(temporary!=null)File.Delete(temporary);}
@@ -615,8 +640,17 @@ public static class C1NativeEngine
         try
         {
             using var input=JsonDocument.Parse(json);var request=input.RootElement;string command=request.GetProperty("command").GetString()??"";
-            if(!new[]{"inspect","context","viewer","read","write","select","clone","layer","module"}.Contains(command))throw new InvalidOperationException("unsupported internal command");
-            var models=Models();var document=Document(models);var variant=Member(Selection(document),"PrimaryVariant")??Variant(models);
+            if(!new[]{"session","inspect","context","viewer","read","write","select","clone","layer","module"}.Contains(command))throw new InvalidOperationException("unsupported internal command");
+            var models=Models();var document=Document(models,false);
+            if(command=="session")
+            {
+                string? path=Member(document,"Path")?.ToString(),id=Member(document,"UUID")?.ToString();
+                if(document==null||string.IsNullOrEmpty(path)||!Guid.TryParse(id,out var guid)||guid==Guid.Empty)throw new InvalidOperationException("no current native Session with stable document identity");
+                var version=System.Diagnostics.FileVersionInfo.GetVersionInfo(Environment.ProcessPath!);
+                string hostVersion=$"{version.FileMajorPart}.{version.FileMinorPart}.{version.FileBuildPart}.{version.FilePrivatePart}";
+                return JsonSerializer.Serialize(new {status="ok",backend="c1_internal_model",read_only=true,data=new {document_path=path,document_uuid=id,main_hwnd=System.Diagnostics.Process.GetCurrentProcess().MainWindowHandle.ToInt64(),bridge=new {protocol=1,color_policy=NativeColorPolicy,capture_one_version=hostVersion,platform="windows",architecture=System.Runtime.InteropServices.RuntimeInformation.ProcessArchitecture.ToString().ToLowerInvariant(),runtime_major=Environment.Version.Major}}});
+            }
+            var variant=Member(Selection(document),"PrimaryVariant")??Variant(models);
             var basic=models.FirstOrDefault(o=>Name(o).Contains("BasicColorEditorViewModel"));
             object data;
             if(command=="inspect"&&request.TryGetProperty("types",out var apiTypes))
@@ -649,7 +683,9 @@ public static class C1NativeEngine
             {data=Preview(document!,variant!,request);}
             else if(command=="context")
             {
-                if(variant==null||document==null)throw new InvalidOperationException("no selected native photo");
+                if(document==null)throw new InvalidOperationException("no current native document");
+                if(variant==null)
+                    return JsonSerializer.Serialize(new {status="ok",backend="c1_internal_model",read_only=true,data=new {target=Target(null,document),selected_count=0,layers=Array.Empty<object>()}});
                 var image=Member(variant,"Image");var variants=Items(Member(image,"Variants")).ToList();int ordinal=variants.FindIndex(v=>Member(v,"UUID")?.ToString()==Member(variant,"UUID")?.ToString())+1;
                 string label=Member(image,"FileName")?.ToString()??"";if(ordinal>1)label+=" ["+ordinal+"]";
                 data=new {target=Target(variant,document),image_path=Member(image,"FullpathFilename")?.ToString(),variant_label=label,layer_uuid=LayerId(variant),layers=Layers(variant),selected_count=Member(Member(Selection(document),"SelectedVariants"),"Count"),collection_uuid=Member(CurrentCollection(document),"UUID")?.ToString(),processing_engine=Convert.ToInt32(Member(variant,"ProcessingEngine")),process_revision=ProcessRevision(variant)};

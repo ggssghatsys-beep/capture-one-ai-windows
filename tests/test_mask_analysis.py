@@ -108,7 +108,8 @@ def test_empty_mask_never_falls_back_or_reports_stale_snapshot_fresh(tmp_path):
             path=tmp_path/('mask.bgra' if mask else 'photo.bgra');path.write_bytes(data)
             image={'width':2,'height':1,'stride':8,'format':'BGRA8','row_order':'top-down','bit_depth':8,
                    'sha256':hashlib.sha256(data).hexdigest()}
-            return {'status':'completed','revision':self.revision,'path':str(path),'image':image,'preview_id':'p','geometry':{}}
+            return {'status':'completed','revision':self.revision,'path':str(path),'image':image,'preview_id':'p','geometry':{},
+                    **({'color_encoding':{'policy':'native-srgb-v1','space':'srgb','conversion':'coregraphics_icc_to_srgb'}} if not mask else {})}
     backend=Backend();service=AnalysisService(backend,tmp_path/'state')
     req={'analysis_scope':'active_layer','include_image':'vectorscope'}
     r=service.dispatch(req,lambda a,b:None);aid=r['analysis']['analysis_id']

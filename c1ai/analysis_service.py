@@ -26,6 +26,7 @@ def failure_details(error):
         'analysis requires exactly one selected variant','native value unavailable: primaryVariant',
         'Viewer cache changed','Viewer cache identity changed','Native display target changed','Native preview revision changed'))
     return {'error':message,'error_code':getattr(error,'code',None),
+            **({'current_session_binding':details['session_binding']} if isinstance(details,dict) and isinstance(details.get('session_binding'),dict) else {}),
             **({'retry_after_ms':50} if transient else {})}
 
 
@@ -60,6 +61,11 @@ class AnalysisService:
         response=self._dispatch(request,check_target)
         response['request_elapsed_seconds']=round(time.monotonic()-started,4)
         return response
+
+    def _follow_binding(self,binding):
+        if binding is not None and self.reference_id in self.records:
+            if self.records[self.reference_id]['result'].get('session_binding')!=binding:
+                self.reference_id=None
 
     def _dispatch(self, request, check_target):
         action = request.get('action','refresh')
@@ -106,14 +112,18 @@ class AnalysisService:
         try:
             stamp = source.observe()
         except Exception as error:
-            return self._response(record,'stale' if record else 'failed',request,**failure_details(error))
+            details=failure_details(error)
+            self._follow_binding(details.get('current_session_binding'))
+            return self._response(record,'stale' if record else 'failed',request,**details)
         if source.name != 'file':
             # Keep the existing refusal contract: a target mismatch must not return an image.
             check_target(request.get('target'), stamp['target'])
+        binding=stamp.get('session_binding')
+        self._follow_binding(binding)
         changed = record is None or record['stamp'] != stamp['key']
         if action in {'get','reference','status'}:
             return self._response(record,'stale' if changed and record else 'waiting' if changed else 'ready',
-                                  request,current_target=stamp['target'],current_revision=stamp['revision'])
+                                  request,current_target=stamp['target'],current_revision=stamp['revision'],current_session_binding=binding)
         if not changed:
             # Window polling needs only a fresh stamp when it already has this exact artifact.
             if (request.get('known_analysis_id')==record['result']['analysis_id']
@@ -122,13 +132,15 @@ class AnalysisService:
                     and request.get('include_image','none') in record['artifacts']):
                 return {'status':'ok','unchanged':True,'analysis_id':record['result']['analysis_id'],
                         'precision':record['result']['precision'],
-                        'freshness':{'state':'ready','checked_at_unix':time.time()},'current_target':stamp['target']}
-            return self._response(record,'ready',request,current_target=stamp['target'])
+                        'freshness':{'state':'ready','checked_at_unix':time.time()},'current_target':stamp['target'],
+                        'current_session_binding':binding}
+            return self._response(record,'ready',request,current_target=stamp['target'],current_session_binding=binding)
         start=time.monotonic()
         try:
             data,meta=source.acquire(stamp)
             acquired=time.monotonic()
-            pixels=decode(data,space,raw=meta.get('pixel_buffer'),precision=precision)
+            pixels=decode(data,space,raw=meta.get('pixel_buffer'),precision=precision,
+                          native_color=meta.get('color_encoding'))
             if '_mask_data' in meta:
                 pixels=apply_mask(pixels,meta.pop('_mask_data'),meta.pop('_mask_geometry'),meta['geometry'],
                                   raw=meta.pop('_mask_pixel_buffer',None))
@@ -139,7 +151,8 @@ class AnalysisService:
             after=source.observe()
             if after['key'] != stamp['key']:
                 return self._response(record,'stale' if record else 'waiting',request,
-                                      current_target=after['target'],error='Selection or revision changed; late image discarded')
+                                      current_target=after['target'],current_session_binding=after.get('session_binding'),
+                                      error='Selection or revision changed; late image discarded')
             analysis_id=uuid.uuid4().hex
             policy=policy_for(space,precision)
             if pixels.mask_weights is not None:
@@ -158,9 +171,11 @@ class AnalysisService:
             self.records[analysis_id]=new
             self.latest[slot]=analysis_id
             self._prune()
-            return self._response(new,'ready',request,current_target=after['target'])
+            return self._response(new,'ready',request,current_target=after['target'],current_session_binding=after.get('session_binding'))
         except Exception as error:
-            return self._response(record,'stale' if record else 'failed',request,current_target=stamp['target'],**failure_details(error))
+            details=failure_details(error)
+            details.setdefault('current_session_binding',binding)
+            return self._response(record,'stale' if record else 'failed',request,current_target=stamp['target'],**details)
 
     def _ensure_statistics(self,record):
         if record['result']['statistics_state']=='ready':return False

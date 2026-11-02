@@ -123,6 +123,10 @@ static NSDictionary *DisplayCache(NSDictionary *request) {
     void *cg=[image CGImageForProposedRect:0 context:nil hints:nil];
     if (!cg) return DisplayUnavailable(@"Viewer cache bitmap unavailable",target);
     if (!CGImageGetColorSpace(cg)) return DisplayUnavailable(@"Viewer cache color profile unavailable",target);
+    void *sourceICC=CGColorSpaceCopyICCData(CGImageGetColorSpace(cg));
+    BOOL knownICC=sourceICC && CFDataGetLength(sourceICC)>=128;
+    if (sourceICC) CFRelease(sourceICC);
+    if (!knownICC) return DisplayUnavailable(@"Viewer cache source ICC unavailable",target);
     NSUInteger inputWidth=CGImageGetWidth(cg),inputHeight=CGImageGetHeight(cg);
     if (!inputWidth || !inputHeight || inputWidth>16000 || inputHeight>16000)
         return DisplayUnavailable(@"Viewer cache dimensions unsupported",target);
@@ -167,6 +171,7 @@ static NSDictionary *DisplayCache(NSDictionary *request) {
             @"source":@"C1 VariantGeometryTransformer.canvasCropRect"},
         @"artifact":@{@"path":path,@"width":@((NSInteger)width),@"height":@((NSInteger)height),@"format":@"BGRA8",@"stride":@((NSInteger)stride),
             @"row_order":@"top-down",@"bit_depth":@8,@"color_profile":@"sRGB",
+            @"color_encoding":@{@"policy":@"native-srgb-v1",@"space":@"srgb",@"conversion":@"coregraphics_icc_to_srgb"},
             @"timing_seconds":@{@"cache_and_transfer":@(CFAbsoluteTimeGetCurrent()-started)}}};
     } @finally {
         [variant release]; [doc release]; [window release]; [renderer release]; [job release];

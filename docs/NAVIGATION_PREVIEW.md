@@ -35,4 +35,6 @@ preview(action="map_points", kind="native", max_size=1200,
 
 输入/输出使用左上角为原点的像素边界坐标。`raw_to_preview` 支持反向转换。调用C1的非线性转换，包含当前方向、裁切和已有几何状态；不修改几何参数。返回RAW坐标除以 `geometry.raw_dimensions.Width/Height`，才是线性/径向蒙版API需要的归一化坐标。最多256个点；映射时沿用渲染的 `kind` 和 `max_size`。
 
-旧 `kind="viewer", action="capture"` 仍是显示采样；旧 `kind="render"` 仍为显式导出兼容入口。新预览并不完成全尺寸成片导出或独立的ICC色彩准确性验收。
+照片预览与分析缓冲都要求 `color_encoding.policy=native-srgb-v1`：Windows 明确设置 sRGB 输出 ICC，Mac 在源 ICC 已确认后用 CoreGraphics 转为 sRGB。PNG 带 sRGB ICC；旧桥缺少色彩凭据时拒绝交付照片。升级方法、跨机器原则与平台验证范围见 [预览色彩说明](PREVIEW_COLOR.md)。蒙版保留覆盖率数值。
+
+旧 `kind="viewer", action="capture"` 仍是显示采样；旧 `kind="render"` 仍为显式导出兼容入口。指定 sRGB 不等于完成全尺寸导出、显示器校准或独立的 ICC 色彩准确性认证。

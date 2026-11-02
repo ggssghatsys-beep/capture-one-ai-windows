@@ -78,10 +78,10 @@ internal static class C1InternalBootstrap
                 {await Write(pipe,Envelope("result",Error("AUTH_REQUIRED","internal bridge token mismatch")));continue;}
                 string command=request.GetProperty("command").GetString()??"";
                 if(command=="status")
-                {await Write(pipe,Envelope("result",new {status="ok",pid=Environment.ProcessId,started_at=Process.GetCurrentProcess().StartTime.ToUniversalTime().ToFileTimeUtc().ToString(),backend="c1_internal_model",engine_loaded=engine!=null}));continue;}
+                {await Write(pipe,Envelope("result",new {status="ok",pid=Environment.ProcessId,started_at=Process.GetCurrentProcess().StartTime.ToUniversalTime().ToFileTimeUtc().ToString(),main_hwnd=Process.GetCurrentProcess().MainWindowHandle.ToInt64(),backend="c1_internal_model",engine_loaded=engine!=null}));continue;}
                 if(!request.TryGetProperty("expected_instance",out var instance)||instance.GetProperty("pid").GetInt32()!=Environment.ProcessId||instance.GetProperty("started_at").GetString()!=Process.GetCurrentProcess().StartTime.ToUniversalTime().ToFileTimeUtc().ToString())
                 {await Write(pipe,Envelope("result",Error("INSTANCE_CHANGED","request must name this C1 process and start time")));continue;}
-                if(command=="context"||command=="read"||command=="inspect"||command=="viewer")
+                if(command=="session"||command=="context"||command=="read"||command=="inspect"||command=="viewer")
                 {await Write(pipe,Envelope("result",JsonSerializer.Deserialize<object>(await OnUi(request.GetRawText()))));continue;}
                 string id=request.GetProperty("request_id").GetString()??"";
                 if(id.Length==0||id.Length>128){await Write(pipe,Envelope("result",Error("REQUEST_ID_REQUIRED","nonempty request id required")));continue;}

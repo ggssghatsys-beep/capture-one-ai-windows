@@ -11,6 +11,7 @@ from pathlib import Path
 
 import numpy as np
 from PIL import Image, ImageCms, ImageDraw, ImageOps, ImageFont
+from .render_color import require_native_srgb
 
 POLICY = {'version': 1, 'max_edge': 1600, 'resize': 'Lanczos, never upscale',
           'signal': 'sRGB encoded Yprime = 0.2126 Rprime + 0.7152 Gprime + 0.0722 Bprime',
@@ -85,7 +86,7 @@ def _bgra(data,raw):
     return np.frombuffer(data,dtype=np.uint8).reshape(h,w,4)
 
 
-def decode(data: bytes, color_space='srgb', raw=None, precision='exact') -> Pixels:
+def decode(data: bytes, color_space='srgb', raw=None, precision='exact', native_color=None) -> Pixels:
     """One canonical sRGB buffer for numerical analysis, scopes and displayed preview."""
     destination=profile_bytes(color_space)
     max_edge=PRECISION_EDGES[precision]
@@ -118,6 +119,11 @@ def decode(data: bytes, color_space='srgb', raw=None, precision='exact') -> Pixe
                  'source_icc_sha256': hashlib.sha256(icc).hexdigest() if icc else None,
                  'confirmation': 'embedded_icc_converted' if icc else 'assumed_sRGB_no_ICC',
                  'conversion': 'ImageCms relative colorimetric directly to selected space, 8-bit; out-of-gamut values clipped' if icc or color_space!='srgb' else 'No transform; assume sRGB encoding and primaries'}
+        if native_color is not None:
+            color['native_encoding'] = require_native_srgb(native_color)
+            color['confirmation'] = 'verified_native_srgb_output'
+            if not icc and color_space == 'srgb':
+                color['conversion'] = 'Native renderer explicitly converted to sRGB; no additional transform'
         if icc or color_space!='srgb':
             profile = ImageCms.ImageCmsProfile(io.BytesIO(icc or _SRGB_ICC))
             color['source_profile'] = ImageCms.getProfileDescription(profile).strip()

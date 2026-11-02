@@ -1,9 +1,12 @@
 #requires -Version 7.6
 [CmdletBinding()]
-param([string]$Python='python', [string]$SessionPath, [switch]$EnvironmentOnly, [switch]$WithScopes, [switch]$WithAI, [switch]$NoScopesShortcut)
+param([string]$Python='python', [string]$SessionPath, [switch]$EnvironmentOnly, [switch]$WithScopes, [switch]$WithAI, [switch]$NoScopesShortcut,
+      [switch]$Offline,[switch]$NoDesktopIntegration)
 $ErrorActionPreference='Stop'
 if(-not $IsWindows){throw 'This package requires Windows.'}
-$project=$PSScriptRoot
+$launcher=$PSScriptRoot
+. (Join-Path $launcher 'internal\project.ps1')
+$project=Get-C1RuntimeProject -Project $launcher
 $venv=Join-Path $project '.venv'
 $pythonExe=Join-Path $venv 'Scripts\python.exe'
 if(-not (Test-Path -LiteralPath $pythonExe)) {
@@ -16,10 +19,13 @@ $extras=@()
 if($WithScopes){$extras+='scopes'}
 if($WithAI){$extras+='ai'}
 $package=if($extras.Count){$project+'['+($extras -join ',')+']'}else{$project}
-& $pythonExe -m pip install -r (Join-Path $project 'requirements-runtime.txt') $package
+$pipArguments=@('-m','pip','install')
+if($Offline){$pipArguments+=@('--no-index','--no-build-isolation')}
+$pipArguments+=@('-r',(Join-Path $project 'requirements-runtime.txt'),$package)
+& $pythonExe @pipArguments
 if($LASTEXITCODE -ne 0){throw 'Installation failed; no C1 configuration was changed.'}
-$server=@{mcpServers=@{'capture-one-ai'=@{command=$pythonExe;args=@('-m','c1ai','mcp');env=@{PYTHONUTF8='1';PYTHONUNBUFFERED='1'}}}}
-$server|ConvertTo-Json -Depth 8|Set-Content -LiteralPath (Join-Path $project 'config\mcp-server.local.json') -Encoding utf8NoBOM
+$server=@{mcpServers=@{'capture-one-ai'=@{command=(Get-Process -Id $PID).Path;args=@('-NoLogo','-NoProfile','-NonInteractive','-File',(Join-Path $launcher 'MCP.ps1'));env=@{PYTHONUTF8='1';PYTHONUNBUFFERED='1'}}}}
+$server|ConvertTo-Json -Depth 8|Set-Content -LiteralPath (Join-Path $launcher 'config\mcp-server.local.json') -Encoding utf8NoBOM
 if(-not $EnvironmentOnly) {
  $configure=@((Join-Path $project 'scripts\configure.py'))
  if($SessionPath){$configure+=@('--session',$SessionPath)}
@@ -27,10 +33,10 @@ if(-not $EnvironmentOnly) {
  if($LASTEXITCODE -ne 0){throw 'Environment installed; Session configuration needs attention. See docs/INSTALL.md.'}
 }
 Write-Output 'Installed. MCP config: config/mcp-server.local.json'
-if($WithScopes){
+if($WithScopes -and -not $NoDesktopIntegration){
  & $pythonExe -m c1ai.scopes_window --autostart on --configure-only
  if($LASTEXITCODE -ne 0){throw 'Could not save scopes startup preference.'}
- & (Join-Path $project 'Setup-Shortcuts.ps1') -WithAI:$WithAI -WithoutScopes:$NoScopesShortcut
+ & (Join-Path $launcher 'Setup-Shortcuts.ps1') -WithAI:$WithAI -WithoutScopes:$NoScopesShortcut
 }
-elseif($WithAI){ & (Join-Path $project 'Setup-Shortcuts.ps1') -WithAI -WithoutScopes }
+elseif($WithAI -and -not $NoDesktopIntegration){ & (Join-Path $launcher 'Setup-Shortcuts.ps1') -WithAI -WithoutScopes }
 Write-Output 'Next: start Capture One through Start-CaptureOne.ps1, then run .\Run.ps1 context --compact.'

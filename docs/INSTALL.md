@@ -8,7 +8,10 @@
 
 解压到固定目录，不要在压缩包中运行。安装通过 pip 联网取得依赖，Python、PowerShell、.NET 和 Capture One 不随包分发；C1 须独立安装并有效授权。移动目录后重新安装以更新 MCP 路径。
 
+当前源码另加入 Windows 自动桥匹配与自动 Session 绑定，**已完成本机离线安装和编译，运行切换与 C1 实测待完成**。新默认安装可直接执行 `Install.ps1`，由连接后的原生桥识别当前 Session；下面的 SessionPath 可作为路径提示。固定会话需显式选择 `scripts/configure.py --pinned`。新匹配规则、更新条件和测试安排见 [PORTABLE_BRIDGE](PORTABLE_BRIDGE.md)，本节原有实测记录仍对应修改前基线。
+
 ```powershell
+.\Install.ps1
 .\Install.ps1 -SessionPath 'D:\Photos\MySession\MySession.cosessiondb'
 # Python 不在 PATH 时
 .\Install.ps1 -Python 'C:\Python314\python.exe' -SessionPath 'D:\Photos\MySession\MySession.cosessiondb'

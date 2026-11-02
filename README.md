@@ -1,5 +1,7 @@
 # Capture One AI · Windows / macOS
 
+**预览色彩修复（2026-11-01）：** Windows 原生预览与波形取样明确转换到 sRGB，PNG 内嵌 ICC；Mac 增加最终 ICC 转换与同一色彩凭据，新增 Mac 路径尚待实机验收。旧桥会明确拒绝无法确认的颜色。其他机器更新时需同步更新原生桥，见 [修复与升级说明](docs/PREVIEW_COLOR.md)。
+
 **0.4.0a1：合并原生 Mac 开发预览与现有 Windows 客户端。** Windows 保留 16.8.6.3784 的现有功能；Mac 在 Apple Silicon / macOS 15.7.4 / C1 16.8.6.25 / Session 完成代表性实测，包含原生调色、图层／蒙版、RGB 波形和菜单栏常驻入口。Mac 是版本绑定的源码预览，尚非独立签名安装包；具体缺口见 [Mac 当前范围](docs/MAC_STATUS.md)。
 
 **安装时让桌面 AI 先询问是否创建桌面波形图入口。** 同意后才创建，不同平台共用同一工具接口。[复制安装提示](docs/AI_INSTALL_PROMPT.md) · [Mac 安装](docs/INSTALL_MAC.md) · [Windows 安装](docs/INSTALL.md)。
@@ -9,6 +11,8 @@
 **0.3.0a3 新增 API 修图窗口：** 填写 API 地址和密钥 → 从服务读取模型 → 查询思考等级 → 输入需求，选择“仅分析”或“在副本修图”。无需另外安装聊天客户端。支持 **OpenAI Responses API** 及实现相同图片／工具调用协议的服务；仅有 Chat Completions 的接口暂不支持。模型和等级不使用固定清单，服务未提供的能力明确标为未知。
 
 **0.3.0a3 预览版，实测 Capture One 16.8.6.3784 / Windows / Session。** 本机 C1 副本读写、预览和蒙版分析已实测；**新 API 客户端的真实云端模型联调尚未完成**，不能据此保证所有模型或第三方兼容服务可用。使用 C1 内部托管对象和原生处理内核，不是官方公开稳定 SDK。其他 C1 版本、Catalog 和多照片批量任务尚未完成兼容验证；启动器拒绝未验证版本。
+
+**Windows 自动匹配桥与 Session 自动绑定：本机安装、编译和离线检查已完成，待运行切换与实机验证。** 新入口发现本机 C1，按兼容清单准备完整版本包，统一 MCP/CLI/AI/波形图所用版本；默认跟随当前原生 Session 的路径和 UUID。保留最新 sRGB 取图修复。检查范围和运行切换条件见 [便携桥说明](docs/PORTABLE_BRIDGE.md)。
 
 Native Capture One editing for Windows with an optional direct API chat window, MCP and a JSON CLI. Enter a Responses API key, discover models and reasoning efforts from your provider, and edit protected variants using the existing native bridge. Includes scopes, mask-aware analysis and ROI statistics. Cloud model integration is pending live validation. Unofficial, version-specific, MIT-licensed.
 

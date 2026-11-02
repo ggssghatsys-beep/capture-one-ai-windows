@@ -208,6 +208,8 @@ class Core:
             # expected controls/parameters immediately at dispatch and reads back
             # once afterward. Only the photo target needs a fresh check here.
             current = self.backend.observe([])
+            if current.get('session_binding') is not None and saved.get('session_binding') != current['session_binding']:
+                raise Refused('session_changed', 'Session binding changed; read this module again before editing')
             self._target(saved["target"], current["target"])
             self._target(request["target"], current["target"])
             observation = dict(saved, observation_token=request["observation_token"])

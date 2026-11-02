@@ -1,5 +1,6 @@
 # Local environments and build output
 .venv/
+.venv-bootstrap-failed/
 .packaging-venv/
 __pycache__/
 *.py[cod]
@@ -8,6 +9,9 @@ __pycache__/
 build/
 dist/
 internal/bin/
+.bridge-cache/
+.deployment-backups/
+config/bridge-selected.local.json
 a.out
 *.dylib
 

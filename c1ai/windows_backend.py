@@ -95,10 +95,13 @@ class WindowsBackend:
     def __init__(self, state_dir=None):
         self.state_dir = Path(state_dir or Path(os.environ['LOCALAPPDATA'])/'CaptureOneAI')
         self.config_path = self.state_dir/'config.json'
-        self.config = json.loads(self.config_path.read_text('utf-8')) if self.config_path.exists() else {}
+        self.config = json.loads(self.config_path.read_text('utf-8-sig')) if self.config_path.exists() else {}
+        from .session_binding import SessionBinding
+        self.session_binding = SessionBinding(self.config)
         self.native_dir = Path(__file__).parent/'native'
         self.worker = UiaWorker(self.native_dir/'uia-host.ps1')
         self.window = None
+        self.bridge_info = None
         self.action_hook = None
 
     def close(self): self.worker.close()
@@ -131,9 +134,50 @@ class WindowsBackend:
 
     def _connect(self):
         from .native_windows import find_native_main
-        session=self.config.get('session_path')
-        if not session:raise NativeError('SESSION_REQUIRED','Set session_path in the user config')
-        self.window=find_native_main(Path(session).stem)
+        from .internal_transport import call
+        status=call({'command':'status'})
+        if status.get('status') != 'ok':
+            raise NativeError('INTERNAL_MODEL_UNAVAILABLE','The authenticated C1 bridge is not ready')
+        title=Path(self.session_binding.pinned).stem if self.session_binding.mode=='pinned' else None
+        self.window=find_native_main(title,main_hwnd=status.get('main_hwnd'),expected_pid=status.get('pid'))
+        if any(str(status.get(k))!=str(self.window[k]) for k in ('pid','started_at')):
+            self.window=None
+            raise NativeError('INSTANCE_CHANGED','C1 instance changed during session discovery')
+        native=self._model_call({'command':'session'})
+        from .bridge_packages import installed_project, match_adapter, read_matrix
+        project=installed_project()
+        matrix=read_matrix(project)
+        adapter=match_adapter(matrix,native.get('bridge',{}))
+        if adapter is None:
+            raise NativeError('BRIDGE_VERSION_UNQUALIFIED','The running C1 bridge does not match this source package')
+        profile_path=(project/adapter['profile']).resolve()
+        if not profile_path.is_relative_to(project/'config'):
+            raise NativeError('INVALID_QUALIFICATION_CONFIG','Adapter profile is outside config')
+        profile=json.loads(profile_path.read_text('utf-8-sig'))
+        if profile.get('qualified_version')!=self.window['version']:
+            raise NativeError('INVALID_QUALIFICATION_CONFIG','Adapter profile and running C1 versions disagree')
+        if native['bridge'].get('protocol')!=matrix['protocol'] or native['bridge'].get('color_policy')!=matrix['color_policy']:
+            raise NativeError('BRIDGE_UPDATE_REQUIRED','Core and native bridge require a matching protocol and color policy')
+        self.config.update(profile)
+        from . import __version__
+        self.bridge_info={'core_version':__version__,'adapter_id':adapter['id'],
+                          'protocol':matrix['protocol'],'color_policy':matrix['color_policy'],
+                          'capture_one_version':self.window['version'],
+                          'architecture':native['bridge']['architecture']}
+        self._accept_session(native)
+
+    def _accept_session(self, native):
+        binding=self.session_binding.accept(native,self.window)
+        main_hwnd=native.get('main_hwnd')
+        if main_hwnd is not None and main_hwnd!=self.window['hwnd']:
+            from .native_windows import find_native_main
+            window=find_native_main(main_hwnd=main_hwnd,expected_pid=self.window['pid'])
+            if window['started_at']!=self.window['started_at']:
+                raise NativeError('INSTANCE_CHANGED','C1 process changed while rebinding its main window')
+            self.window=window
+        # Runtime binding only: keep config.json and other clients' settings intact.
+        self.config['session_path']=binding['path']
+        return binding
 
     def action(self, name, func, intent=None):
         if not callable(self.action_hook): raise NativeError('JOURNAL_REQUIRED','Native side effect requires the core operation journal')
@@ -147,9 +191,8 @@ class WindowsBackend:
             if not alive:self.window=None
         if not self.window: self._connect()
         native=self._model_call({'command':'context'})
-        if native['selected_count']!=1:raise NativeError('SINGLE_SELECTION_REQUIRED','Exactly one native selected variant required')
-        if Path(native['target']['document_path'])!=Path(self.config['session_path']):
-            raise NativeError('DOCUMENT_CHANGED','Native document differs from configured Session')
+        binding=self._accept_session(native['target'])
+        if native['selected_count']!=1:raise NativeError('SINGLE_SELECTION_REQUIRED','Exactly one native selected variant required',{'session_binding':binding})
         from .native_modules import layer_reference
         selected=[row for row in native['layers'] if row['selected']]
         if len(selected)!=1:raise NativeError('SINGLE_LAYER_REQUIRED','Exactly one native selected layer required')
@@ -157,7 +200,7 @@ class WindowsBackend:
         target={'instance':{k:self.window[k] for k in ('pid','started_at','version')},
             'document':{'path':native['target']['document_path']},'image':{'path':native['image_path']},
             'variant':{'id':native['target']['variant_uuid'],'label':native['variant_label']},'layer':layer}
-        observation={'target':target,'values':{},'raw_state':{'window':self.window},'native_context':native,
+        observation={'target':target,'values':{},'session_binding':binding,'raw_state':{'window':self.window},'native_context':native,
             'native_layers':{'layers':native['layers'],'selected':selected},
             'evidence':{'source':'c1_internal_model','atomic':True,'model_verified':True,
                 'adjustment_scope':'background' if layer=='Background' else 'active_adjustment_layer',
@@ -207,20 +250,22 @@ class WindowsBackend:
     def context(self):
         from .native_windows import native_window_inventory
         self._connect()
+        connection={'bridge':self.bridge_info} if getattr(self,'bridge_info',None) else {}
         inventory=native_window_inventory(self.window['pid'],self.window['hwnd'],
             expected_started_at=self.window['started_at'])
         if inventory['blocking_modal_possible'] or inventory.get('main_enabled') is False or inventory.get('enumeration_complete') is False:
             reason='owned_window_blocks_main' if inventory['blocking_modal_possible'] else 'native_window_state_unavailable'
-            return {'target':None,'editing_ready':False,'reason':reason,
+            return {**connection,'target':None,'editing_ready':False,'reason':reason,
                     'window':self.window,'native_windows':inventory,
                     'capabilities':{'modules':{},'fields':{}},'evidence':{'source':'native_window_inventory','model_verified':False}}
         try:obs=self.observe([])
         except NativeError as e:
             if e.code not in ('CONTROL_NOT_FOUND','SINGLE_SELECTION_REQUIRED','SINGLE_LAYER_REQUIRED'):raise
-            return {'target':None,'editing_ready':False,'reason':e.code,'window':self.window,
+            return {**connection,'target':None,'editing_ready':False,'reason':e.code,'window':self.window,
+                    'session_binding':self.session_binding.current,
                     'native_windows':inventory,'capabilities':{'modules':{},'fields':{}},
                     'evidence':{'source':'native_window_inventory','model_verified':False}}
-        return {'target':obs['target'],'capabilities':self.capabilities_for(obs),
+        return {**connection,'target':obs['target'],'session_binding':obs['session_binding'],'capabilities':self.capabilities_for(obs),
                 'editing_ready':True,'evidence':obs['evidence'],'native_windows':inventory,
                 'native_worker_starts':self.worker.starts}
 
@@ -322,9 +367,8 @@ class WindowsBackend:
             options={k:request[k] for k in ('scope','offset','limit','collection_token') if request.get(k) is not None}
             result=self._model_call({'command':'read','scope':'images','options':options})
             native=result.pop('navigation')
-            if Path(native['document_path'])!=Path(self.config['session_path']):
-                raise NativeError('DOCUMENT_CHANGED','Native collection differs from configured Session')
-            observation={'navigation':True,'target':{
+            binding=self._accept_session(native)
+            observation={'navigation':True,'session_binding':binding,'target':{
                 'instance':{k:self.window[k] for k in ('pid','started_at','version')},
                 'document':{'path':native['document_path']},'collection':{'id':result['collection_uuid']},
                 'image':{'path':None},'variant':{'id':None,'label':None},'layer':None},

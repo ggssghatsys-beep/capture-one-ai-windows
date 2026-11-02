@@ -283,7 +283,8 @@ def analyze_image(action: Literal['refresh','status','get','reference','clear_re
     Returns structured RGB/Yprime/linear-Y percentiles, endpoint ratios and horizontal zone values.
     ROI uses normalized IMAGE edges [left,top,right,bottom]. Encoded signal is 0..100%, NOT IRE.
     color_space selects actual ICC conversion to sRGB, Adobe RGB (1998), or Display P3.
-    Missing source ICC is still assumed sRGB; a wider target cannot recover missing gamut.
+    Native photo pixels require confirmed sRGB output from the updated bridge.
+    Untagged external files are assumed sRGB; a wider target cannot recover missing gamut.
     Read freshness.state: stale/waiting/failed must not be treated as current adjustments.
     analysis_id binds all numbers and optional image to one snapshot. reference pins an existing
     ID; compare via reference_id on refresh/get. Same photo/crop/policy/ROI required.

@@ -195,7 +195,10 @@ def verify_mask_result(patch,before,after):
     elif action=='radial_gradient':
         radial=after.get('radial') or {};size=after.get('raw_dimensions',{})
         ok=ok and close(radial.get('radius_x'),patch['radius_x']*size.get('Width',0)) and close(radial.get('radius_y'),patch['radius_y']*size.get('Height',0)) and close(radial.get('falloff'),patch['falloff'])
-        ok=ok and close(radial.get('angle'),patch['angle']) and radial.get('fill')==('CenterFromNoneToFull' if patch['inverted'] else 'CenterFromFullToNone')
+        angle=radial.get('angle')
+        # C1 normalizes negative angles to the equivalent turn in [0, 360).
+        angle_matches=isinstance(angle,(int,float)) and close((angle-patch['angle']+180)%360-180,0)
+        ok=ok and angle_matches and radial.get('fill')==('CenterFromNoneToFull' if patch['inverted'] else 'CenterFromFullToNone')
         ok=ok and all(close((radial.get('center') or {}).get(axis),patch['center'][i]*size.get(dimension,0)) for i,axis,dimension in ((0,'X','Width'),(1,'Y','Height')))
     elif action in ('invert','copy','feather'):
         ok=ok and (after.get('content_revision')!=before.get('content_revision') or action=='feather' and patch['radius']==0)
@@ -310,6 +313,33 @@ def reconcile_module(backend,record):
     response={'outcome':'unknown','target':after['target'],'evidence':evidence}
     if any(before['target'][k]!=after['target'][k] for k in ('instance','document','image','variant')):return response
     actions=record.get('actions',[]);patch=record['request']['patch'];action=patch.get('action')
+    if module=='masks' and action in {'radial_gradient','luma_range','linear_gradient'} and after['target']==before['target']:
+        receipts=[a for a in actions if a['name']=='masks.'+action and a['status']=='completed'
+                  and a.get('result',{}).get('accepted') is True]
+        timeouts=[a for a in actions if a['name']=='masks.'+action and a['status']=='outcome_unknown'
+                  and a.get('error',{}).get('code')=='UI_TIMEOUT' and a.get('error',{}).get('dispatched') is True]
+        stable=all(before['state'].get(k)==after['state'].get(k) for k in ('layers','selected_layer','details','opacity'))
+        updated_shape={'radial_gradient':'radial','luma_range':'luma','linear_gradient':'linear'}[action]
+        preserved_shapes=tuple(k for k in ('radial','luma','linear') if k!=updated_shape)
+        stable=stable and all(before['state']['mask'].get(k)==after['state']['mask'].get(k)
+                              for k in ('raw_dimensions','composition','selected_submask')+preserved_shapes)
+        old_components=before['state']['mask'].get('submasks',[])
+        new_components=after['state']['mask'].get('submasks',[])
+        same_components=old_components==new_components
+        if action=='luma_range' and not old_components and len(new_components)==2:
+            first,last=new_components
+            same_components=(first.get('radial') is True and first.get('linear') is False
+                and first.get('luma') is False and first.get('blend')=='bmDraw'
+                and last.get('luma') is True and last.get('radial') is False
+                and last.get('linear') is False and last.get('blend')=='bmMultiply'
+                and before['state']['mask'].get('radial',{}).get('radius_x',0)>0)
+        stable=stable and same_components
+        if (len(receipts)==1 or len(timeouts)==1 and len(actions)==1) and stable:
+            from .windows_backend import NativeError
+            try:verify_mask_result(patch,before['state']['mask'],after['state']['mask'])
+            except NativeError:return response
+            response.update(outcome='applied_not_restored',target_transition=transition(before,after))
+        return response
     if module in ('layers','masks') and action in ('create_empty','create_subject','create_background'):
         old=before['state']['layers'];new=after['state']['layers'];selected=after['state']['selected_layer']
         from collections import Counter
@@ -317,7 +347,12 @@ def reconcile_module(backend,record):
         receipts=[a for a in actions if a['name']==module+'.'+action and a['status']=='completed' and a.get('result',{}).get('accepted') is True]
         native=next((n for n in after['native_layers']['layers'] if n['selected']),{})
         expected={'create_subject':'Subject','create_background':'Background'}.get(action)
-        if (len(receipts)==1 and len(new)==len(old)+1 and not (old_names-new_names)
+        timeouts=[a for a in actions if a['name']==module+'.'+action and a['status']=='outcome_unknown'
+                  and a.get('error',{}).get('code')=='UI_TIMEOUT' and a.get('error',{}).get('dispatched') is True]
+        mask_ready=after['state'].get('mask',{}).get('applicable') is True and after['state']['mask'].get('buffered') is False
+        qualified_timeout=expected is not None and len(timeouts)==1 and len(actions)==1 and mask_ready
+        if ((len(receipts)==1 or qualified_timeout) and len(new)==len(old)+1 and not (old_names-new_names)
+            and all(layer in new for layer in old)
             and selected['name'] not in old_names and not selected['is_image_layer'] and native.get('mask')
             and (expected is None or native.get('generated')==expected)):
             response.update(outcome='applied_not_restored',target_transition=transition(before,after))

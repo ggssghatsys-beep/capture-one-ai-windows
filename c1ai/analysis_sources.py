@@ -5,6 +5,7 @@ from pathlib import Path
 import time
 
 from .contracts import digest
+from .render_color import NATIVE_COLOR_POLICY, require_native_srgb
 
 
 class NativeSource:
@@ -24,8 +25,8 @@ class NativeSource:
         if revision is None:
             raise ValueError('Native engine needs the scopes update: process revision unavailable')
         viewer=obs['native_context'].get('viewer_stamp') if self.precision=='display' else None
-        return {'key': digest([obs['target'],revision,viewer]), 'revision': revision,
-                'target': obs['target'], 'observation': obs}
+        return {'key': digest([obs['target'],obs.get('session_binding'),revision,viewer,NATIVE_COLOR_POLICY]), 'revision': revision,
+                'target': obs['target'], 'session_binding':obs.get('session_binding'), 'observation': obs}
 
     def acquire(self, stamp):
         # Read-only rendering; same backend + expected instance/document/variant/layer as preview.
@@ -35,10 +36,11 @@ class NativeSource:
         result = self.backend.preview(request, stamp['observation'])
         if result.get('status') != 'completed' or result.get('revision') != stamp['revision']:
             raise ValueError('Native renderer has not completed the observed revision')
+        encoding = require_native_srgb(result.get('color_encoding'))
         data = Path(result['path']).read_bytes()
         if hashlib.sha256(data).hexdigest() != result['image']['sha256']:
             raise ValueError('Native image bytes changed after render')
-        meta={'source':self.name, 'target':stamp['target'],
+        meta={'source':self.name, 'target':stamp['target'], 'session_binding':stamp.get('session_binding'),
                       'native_timing_seconds':result['image'].get('timing_seconds'),
                       'photo_key':[native.get('target',{}).get('document_uuid',stamp['target'].get('document',{}).get('path')),
                                    native.get('image_path',stamp['target']['image']['path'])],
@@ -48,12 +50,12 @@ class NativeSource:
                       'crop_signature':digest(result['geometry']),
                       'captured_at_unix':time.time(), 'render_completed':True,
                       'export_used':False, 'screenshot_used':False,
-                      'analysis_scope':'image','selected_layer':stamp['target']['layer']}
+                      'analysis_scope':'image','selected_layer':stamp['target']['layer'], 'color_encoding':encoding}
         if result.get('sample_source'):
             meta.update(sample_source=result['sample_source'],sample_limitation=result.get('sample_limitation'),
                         viewer_stamp=result.get('viewer_stamp'))
         meta['sample_source']=result.get('sample_source') or 'native_job'
-        meta['render_basis']={'sample_source':meta['sample_source']}
+        meta['render_basis']={'sample_source':meta['sample_source'], 'color_policy':encoding['policy']}
         if meta['sample_source']=='viewer_cache':
             viewer=result.get('viewer_stamp') or {}
             for key in ('proof_profile','display_profile'):

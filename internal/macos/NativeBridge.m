@@ -177,6 +177,28 @@ static NSDictionary *Inspect(void) {
     [result setObject:@([NSClassFromString(@"ColorWheelLayout") currentRotationAngle]) forKey:@"wheel_rotation"];
     return result;
 }
+static void *NativeSRGBImage(void *image, NSUInteger width, NSUInteger height) {
+    void *sourceSpace = CGImageGetColorSpace(image);
+    if (!sourceSpace) @throw @"native photo has no source ICC color space";
+    void *sourceICC = CGColorSpaceCopyICCData(sourceSpace);
+    BOOL knownICC = sourceICC && CFDataGetLength(sourceICC) >= 128;
+    if (sourceICC) CFRelease(sourceICC);
+    if (!knownICC) @throw @"native photo source ICC is unavailable; refusing an assumed conversion";
+    void *space = CGColorSpaceCreateWithName(kCGColorSpaceSRGB);
+    if (!space) @throw @"sRGB color space unavailable";
+    // The source ICC is honored by DrawImage. This is a conversion, not a
+    // replacement label. The resulting CGImage serves both PNG and BGRA paths.
+    void *context = CGBitmapContextCreate(0, width, height, 8, width * 4, space, 0x2002);
+    CFRelease(space);
+    if (!context) @throw @"cannot create native sRGB bitmap context";
+    CGRect bounds = {{0,0},{(double)width,(double)height}};
+    CGContextSetRGBFillColor(context,0,0,0,1); CGContextFillRect(context,bounds);
+    CGContextDrawImage(context,bounds,image);
+    void *converted = CGBitmapContextCreateImage(context);
+    CGContextRelease(context);
+    if (!converted) @throw @"native sRGB image conversion failed";
+    return converted;
+}
 static NSDictionary *Start(NSDictionary *request) {
     CheckTarget(request[@"target"]);
     double started = CFAbsoluteTimeGetCurrent();
@@ -226,6 +248,7 @@ static NSDictionary *Start(NSDictionary *request) {
     if ([kind isEqual:@"mask"])
         [Job setActiveMaskHandle:[snapshotMask handle]];
     NSString *profile = @"/System/Library/ColorSync/Profiles/sRGB Profile.icc";
+    if (![[NSData dataWithContentsOfFile:profile] length]) @throw @"native sRGB profile unavailable";
     [Job setProofProfilePath:profile]; [Job setDisplayProfilePath:profile];
     Operation = [NSClassFromString(@"ICPackageOperation") new];
     [Operation setSettingsFiller:filler]; [Operation setJobs:@[Job]];
@@ -256,6 +279,10 @@ static NSDictionary *Finish(NSDictionary *request) {
         NSInteger w = (NSInteger)CGImageGetWidth(cg), h = (NSInteger)CGImageGetHeight(cg);
         if (w < 1 || h < 1 || w > (NSInteger)MaxSize + 8 || h > (NSInteger)MaxSize + 8)
             @throw @"native bitmap exceeds requested dimensions";
+        // Masks are scalar coverage: never apply a photo transfer function.
+        void *converted = [JobKind isEqual:@"native"] ? NativeSRGBImage(cg,(NSUInteger)w,(NSUInteger)h) : 0;
+        if (converted) cg = converted;
+        @try {
         NSData *data;
         NSString *extension = JobPixelBuffer ? @"bgra" : @"png";
         if (JobPixelBuffer) {
@@ -296,7 +323,11 @@ static NSDictionary *Finish(NSDictionary *request) {
         Artifact = [@{ @"path": path, @"width": @(w), @"height": @(h),
             @"format": JobPixelBuffer ? @"BGRA8" : @"PNG", @"stride": @(w * 4),
             @"row_order": @"top-down", @"bit_depth": @8,
+            @"color_encoding": [JobKind isEqual:@"native"]
+                ? @{@"policy":@"native-srgb-v1",@"space":@"srgb",@"conversion":@"coregraphics_icc_to_srgb"}
+                : @{@"policy":@"mask-coverage-v1",@"space":@"coverage",@"conversion":@"none"},
             @"timing_seconds": @{@"render_and_transfer": @(CFAbsoluteTimeGetCurrent() - JobStarted)} } retain];
+        } @finally { if (converted) CFRelease(converted); }
     }
     CheckTarget(JobTarget);
     return @{ @"phase": @"ready", @"preview_id": JobID, @"target": JobTarget, @"artifact": Artifact,

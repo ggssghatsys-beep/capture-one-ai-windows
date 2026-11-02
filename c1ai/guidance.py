@@ -12,7 +12,7 @@ def workflow():
         'scope': '用户已经打开并选定的Session及照片集合；默认不切换文档、不导出。',
         'transport': '本机MCP stdio或JSON CLI；不绑定模型、账号或聊天。',
         'analysis_first': '先context、read(fields=[])、preview(kind=native)，实际看图后区分可见问题、用户风格要求和不确定判断。可使用客户端已有的照片分析技能；本接口不依赖某个专属技能。',
-        'candidate': '确认照片身份；只编辑用户指定或已登记的候选副本，必要时create_candidate。保留原变体，避免重复创建副本。',
+        'candidate': '确认照片身份和用户要求。默认create_candidate保留原版本；Windows可用images(prepare_edit,edit_mode=copy|original)明确选择副本或当前原版本。original仅在用户授权直接修改该版本时使用；它登记当前变体，不克隆、不重置照片。两种方式仍需新观察凭据和唯一request_id，准备后重新read；已有登记副本不要重复克隆。不能从参数非零推断一定是用户改过，相机默认值也可能非零。Mac仍仅支持副本。',
         'module_order': list(ORDER),
         'module_loop': '仅选择有明确目的的模块：read(module) → adjust(module,绝对目标值) → 检查回读 → native预览。一个模块的相关参数合并请求；同模块多次技术调用可合并到一次预览。无需遍历所有模块。',
         'plan': '每个模块先说明画面依据、要改善的区域、目标及预计副作用；不要为照片自动套入固定参数或把API上限当作建议值。',
@@ -103,7 +103,10 @@ MCP_INSTRUCTIONS = (
     'Inspect a native preview before choosing adjustments. Edit one necessary module at a time, '
     'using absolute values and fresh observations. Suggested order: '+', '.join(ORDER)+'. '
     'Review the global result before adding local masks. Stop when the user goal is met. '
-    'Stay in the selected Session; no export or document switching by default. Only registered copies are writable. '
+    'Stay in the selected Session; no export or document switching by default. Only registered variants are writable. '
+    'Default to copies. On Windows, images prepare_edit with explicit edit_mode copy or original selects '
+    'copy creation or registration of the current version; original requires user authorization. '
+    'Registration changes no photo parameters. Mac remains copy-only. Read again after preparation. '
     'Readback proves execution, not aesthetic improvement. '
     'Use an explicit unique request_id for each write so an uncertain result can be queried with operations; '
     'never repeat an uncertain write with a new ID. A client with vision/image-block support is required '

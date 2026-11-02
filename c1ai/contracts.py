@@ -11,7 +11,7 @@ MODULES = {
 FIELDS = tuple(field for fields in MODULES.values() for field in fields)
 STRUCTURED_MODULES = {"curves", "levels", "color_mixer", "color_balance", "layers", "masks"}
 COMMANDS = {"context", "read", "adjust", "images", "preview", "operations", "analyze_image"}
-IMAGE_ACTIONS = {"clone", "create_candidate", "select", "next", "previous", "prepare_adjustments", "prepare_tool"}
+IMAGE_ACTIONS = {"clone", "create_candidate", "prepare_edit", "select", "next", "previous", "prepare_adjustments", "prepare_tool"}
 
 
 class Refused(ValueError):

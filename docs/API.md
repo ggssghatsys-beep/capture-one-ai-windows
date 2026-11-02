@@ -33,13 +33,19 @@ Mac `preview(kind=native, action=render)` 优先使用已配置的原生桥，�
 | 工具 | 用途和主要字段 |
 |---|---|
 | context | 环境、目标、能力、未决操作、workflow；include_dialogs 可显式查询弹窗 |
-| images | action=list/create_candidate/select/next/previous；scope、offset、limit、collection_token；选图优先 variant_uuid |
+| images | action=list/create_candidate/prepare_edit/select/next/previous；prepare_edit 必须指定 edit_mode=copy/original；scope、offset、limit、collection_token；选图优先 variant_uuid |
 | read | fields 或 module 或 modules，target 可传预期目标；返回 values/state、target、observation_token、evidence、guidance |
 | adjust | module、patch、target、observation_token、request_id；绝对目标值 |
 | preview | kind=native/mask、max_size；action=capture（默认）或 map_points；返回图片、preview_id 与几何 |
 | operations | action=get/list/reconcile，按 request_id 或 operation_id 查询；reconcile 不重放写入 |
 
 images 的 prepare_tool/prepare_adjustments、preview 的 viewer/render 是显式兼容入口，不用于正常原生流程。
+
+## Windows 可选编辑目标
+
+`images(action="prepare_edit", edit_mode="copy", target=..., observation_token=..., request_id=...)` 等同于既有 `create_candidate` 克隆路线。`edit_mode="original"` 在用户明确授权时登记**当前选中的版本**，不创建副本、不重置、不改变照片参数；不表示从 RAW 重新开始。省略模式或未知模式会拒绝，旧 `create_candidate` 行为保持不变。Mac 暂不支持 original。
+
+两种模式均经过目标／观察凭据校验和操作日志。original 登记绑定 Session UUID、文档、照片和变体 UUID；不会开放全局原图写权限。`context.capabilities.images.edit_modes` 声明支持模式，`capabilities.edit_target` 返回当前登记及模式。准备后重新读取模块，再按原 read→adjust→预览流程写入。未知结果查询原 request_id，不能重放。
 
 ## 最小闭环（会创建副本）
 

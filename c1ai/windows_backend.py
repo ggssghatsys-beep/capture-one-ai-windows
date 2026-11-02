@@ -92,6 +92,8 @@ def resolve_identity(session_path, label):
 
 
 class WindowsBackend:
+    original_edit_supported = True
+
     def __init__(self, state_dir=None):
         self.state_dir = Path(state_dir or Path(os.environ['LOCALAPPDATA'])/'CaptureOneAI')
         self.config_path = self.state_dir/'config.json'
@@ -275,7 +277,10 @@ class WindowsBackend:
         path=self.state_dir/'candidates.json'
         records=json.loads(path.read_text('utf-8')) if path.exists() else {}
         candidate=records.get(obs['target']['variant']['id'],{})
-        qualified=qualified and candidate.get('document')==obs['target']['document'] and candidate.get('image')==obs['target']['image']
+        registered=(candidate.get('document')==obs['target']['document'] and candidate.get('image')==obs['target']['image'])
+        if candidate.get('edit_mode') == 'original':
+            registered = registered and bool(candidate.get('session_uuid')) and candidate['session_uuid']==obs.get('session_binding',{}).get('uuid')
+        qualified=qualified and registered
         def declared(name):
             value=self.config.get(name,[])
             if not isinstance(value,list) or any(not isinstance(f,str) or f not in FIELD_INFO for f in value):
@@ -294,11 +299,12 @@ class WindowsBackend:
             raise NativeError('INVALID_QUALIFICATION_CONFIG','Structured modules require an explicit known-module list')
         routes={name:'c1_internal_model' for name in module_names}
         return {'fields':fields,
+                 'edit_target':{'registered':bool(registered),'mode':candidate.get('edit_mode','copy') if registered else None},
                  'modules':{m:{'readable':True,'writable':qualified and m in enabled+experimental_modules,
                     'backend':routes[m], 'availability_requires_fresh_observation':True,
                     'qualification':'live_verified_bounded_scope' if m in enabled else 'experimental_pending_live' if m in experimental_modules else 'implemented_not_enabled'} for m in module_names},
                  'images':{'source':'c1_internal_model','collection_inventory':True,'uuid_selection':True,
-                           'offscreen_selection':True,'pagination':True},
+                           'offscreen_selection':True,'pagination':True,'edit_modes':['copy','original']},
                  'preview':{'default':'native','native':{'source':'capture_one_native_render',
                      'export_required':False,'render_verified':True,'coordinate_mapping':True},
                      'mask':{'source':'capture_one_native_mask','render_verified':True},
@@ -359,6 +365,39 @@ class WindowsBackend:
         return self.write_model(patch,observation['values'],observation)
 
     def image_action(self, action, request, observation):
+        if action=='authorize_original':
+            if request.get('action')!='prepare_edit' or request.get('edit_mode')!='original':
+                error=NativeError('EXPLICIT_EDIT_MODE_REQUIRED','Original editing requires an explicit prepare_edit original request');error.dispatched=False;raise error
+            # Revalidate native identity immediately before persisting per-variant authorization.
+            after=self.observe([])
+            if after['target']!=observation['target'] or after.get('session_binding')!=observation.get('session_binding'):
+                error=NativeError('TARGET_CHANGED','Original edit target changed before authorization');error.dispatched=False;raise error
+            session_uuid=after.get('session_binding',{}).get('uuid')
+            if not session_uuid or self.config.get('qualified_version')!=after['target']['instance']['version']:
+                error=NativeError('ORIGINAL_EDIT_UNQUALIFIED','A qualified native version and bound Session UUID are required');error.dispatched=False;raise error
+            def register():
+                context=getattr(self,'action_context',None)
+                if not context:
+                    error=NativeError('JOURNAL_REQUIRED','Original authorization requires a journaled Core action');error.dispatched=False;raise error
+                target=after['target'];path=self.state_dir/'candidates.json'
+                records=json.loads(path.read_text('utf-8')) if path.exists() else {}
+                existing=records.get(target['variant']['id'],{})
+                if (existing.get('document')==target['document'] and existing.get('image')==target['image']
+                        and (existing.get('edit_mode')!='original' or existing.get('session_uuid')==session_uuid)):
+                    return {'registered':True,'already_registered':True,'edit_mode':existing.get('edit_mode','copy')}
+                records[target['variant']['id']]={'document':target['document'],'image':target['image'],
+                    'source_variant':target['variant'],'edit_mode':'original','session_uuid':session_uuid,
+                    'created_at':time.time(),'operation_id':context['operation_id'],
+                    'qualification':'explicit_original_native_identity'}
+                temp=path.with_suffix('.tmp')
+                with temp.open('w',encoding='utf-8') as out:
+                    json.dump(records,out,ensure_ascii=False,indent=2);out.flush();os.fsync(out.fileno())
+                temp.replace(path)
+                return {'registered':True,'already_registered':False,'edit_mode':'original'}
+            receipt=self.action('images.authorize_original',register)
+            return {'status':'completed','after':after,'registration':receipt,
+                    'candidate_variant_id':after['target']['variant']['id'],
+                    'photo_parameters_changed':False,'model_verified':True}
         if action=='prepare_tool':
             from .native_modules import prepare_tool
             return prepare_tool(self,request['tool'],observation)
@@ -406,6 +445,7 @@ class WindowsBackend:
             records=json.loads(path.read_text('utf-8')) if path.exists() else {}
             records[target['variant']['id']]={'document':target['document'],'image':target['image'],
                 'source_variant':observation['target']['variant'],'created_at':time.time(),
+                'edit_mode':'copy',
                 'qualification':'native_clone_uuid_and_image_identity'}
             temp=path.with_suffix('.tmp')
             with temp.open('w',encoding='utf-8') as out:

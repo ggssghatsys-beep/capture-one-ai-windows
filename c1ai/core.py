@@ -320,6 +320,13 @@ class Core:
         command = request["command"]
         if command == "images" and request.get("action") not in IMAGE_ACTIONS:
             raise Refused("unsupported", "Unsupported image action")
+        if command == "images" and request.get("action") == "prepare_edit":
+            if request.get("edit_mode") not in {"copy", "original"}:
+                raise Refused("invalid_edit_mode", "Explicitly choose edit_mode copy or original")
+            if request["edit_mode"] == "original" and not getattr(self.backend, "original_edit_supported", False):
+                raise Refused("unsupported", "Original-variant authorization is not supported by this backend")
+        elif command == "images" and request.get("edit_mode") is not None:
+            raise Refused("invalid_edit_mode", "edit_mode is only valid for prepare_edit")
         if command == "images" and request.get("action") == "prepare_tool" and request.get("tool") not in STRUCTURED_MODULES:
             raise Refused("unsupported", "Prepare one supported structured tool")
         if command == "preview":
@@ -375,6 +382,8 @@ class Core:
             if command == "adjust" and not structured:
                 return self._adjust(record, patch, metadata, observation)
             image_action = "clone" if request.get("action") == "create_candidate" else request.get("action")
+            if command == "images" and image_action == "prepare_edit":
+                image_action = "clone" if request["edit_mode"] == "copy" else "authorize_original"
             if structured:
                 result = self.backend.adjust_module(request["module"], patch, observation)
             else:

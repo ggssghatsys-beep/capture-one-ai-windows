@@ -134,9 +134,9 @@ def adjust(target: dict[str, Any] | None = None, module: str | None = None,
 
 
 @mcp.tool()
-def images(action: Literal["list", "create_candidate", "select", "next", "previous", "prepare_adjustments", "prepare_tool"],
+def images(action: Literal["list", "create_candidate", "prepare_edit", "select", "next", "previous", "prepare_adjustments", "prepare_tool"],
            target: dict[str, Any] | None = None, observation_token: str | None = None,
-           request_id: str | None = None,
+           request_id: str | None = None, edit_mode: Literal["copy", "original"] | None = None,
            variant_id: StrictInt | None = None,
            variant_uuid: str | None = None, scope: Literal['filtered','all'] = 'filtered',
            offset: StrictInt = 0, limit: StrictInt = 200, collection_token: str | None = None,
@@ -144,13 +144,17 @@ def images(action: Literal["list", "create_candidate", "select", "next", "previo
     """List the active native collection (including offscreen photos), or select by variant_uuid.
 
     Follow next_offset with the same collection_token. next/previous follow the filtered collection.
-    create_candidate clones the selected variant; edits remain restricted to registered copies.
+    create_candidate clones the selected variant. prepare_edit requires explicit edit_mode:
+    copy clones and registers a copy; original (Windows) registers the current variant
+    without cloning or changing photo parameters, only when the user authorized editing it.
+    Both modes require a fresh photo observation and unique request_id. Read again afterward.
+    Original means the currently selected version, not a reset or an unedited RAW.
     Mac supports create_candidate and select by the observed integer variant_id; these
     document/process-scoped script IDs are not UUIDs. Mac list pages the current
     collection; next/previous use Capture One's official change-selection command.
     """
     return _call("images", action=action, target=target, observation_token=observation_token,
-                 request_id=request_id, variant_id=variant_id, variant_uuid=variant_uuid, tool=tool,
+                 request_id=request_id, edit_mode=edit_mode, variant_id=variant_id, variant_uuid=variant_uuid, tool=tool,
                  scope=scope,offset=offset,limit=limit,collection_token=collection_token)
 
 

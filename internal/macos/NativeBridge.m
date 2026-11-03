@@ -113,6 +113,7 @@ static NSDictionary *Target(void) {
     id doc = [NSClassFromString(@"CaptureOneDocument") currentDocument];
     id v = Required(doc, @"primaryVariant");
     return @{ @"pid": @(getpid()), @"document_path": Required(Required(doc, @"fileURL"), @"path"),
+        @"document_uuid": [Required(doc, @"uuid") description],
         @"variant_id": [NSString stringWithFormat:@"%lu", [v rowID]],
         @"variant_uuid": Required(v, @"variantUUID"), @"image_path": Required(v, @"imagePath"),
         @"layer_uuid": [v hasLayerSelected] ? [[[[v activeLocalAdjustmentLayer] mask] uuid] description] : @"Background",
@@ -129,24 +130,32 @@ static void CheckTarget(NSDictionary *expected) {
 #include "ColorActions.inc"
 static NSDictionary *ViewerStamp(void);
 static NSDictionary *AnalysisSnapshot(void) {
-    NSDictionary *target = Target();
-    id doc = [NSClassFromString(@"CaptureOneDocument") currentDocument], v = [doc primaryVariant];
+    id doc = [NSClassFromString(@"CaptureOneDocument") currentDocument];
+    double launched = [[[NSClassFromString(@"NSRunningApplication") currentApplication] launchDate] timeIntervalSince1970];
+    if (!doc) return @{@"session_available":@NO, @"launched_at":@(launched)};
     RequireMethod(doc, "documentType", "q16@0:8");
     if ([doc documentType] != 0) @throw @"analysis requires a Session";
+    RequireMethod(doc, "uuid", "@16@0:8");
+    NSDictionary *session = @{@"document_path":Required(Required(doc,@"fileURL"),@"path"),
+        @"document_uuid":[Required(doc,@"uuid") description]};
     id selection = Required(Required(doc, @"selectedCollection"), @"resultingVariants");
     RequireMethod(selection, "countOfSelectedVariants", "Q16@0:8");
+    NSUInteger count = [selection countOfSelectedVariants];
+    id v = [doc primaryVariant];
     id selected = [selection firstSelectedVariant];
-    if ([selection countOfSelectedVariants] != 1 || !selected || [selected rowID] != [v rowID])
-        @throw @"analysis requires exactly one selected variant";
+    if (count != 1 || !selected || !v || [selected rowID] != [v rowID])
+        return @{@"session":session,@"launched_at":@(launched),@"selected_count":@((NSInteger)count)};
+    NSDictionary *target = Target();
     id image = Required(v, @"syncImage");
     RequireMethod(image, "rowid", "Q16@0:8");
-    NSDictionary *snapshot = @{ @"target": target, @"document_id": Required(doc, @"rootFolder"),
+    NSDictionary *snapshot = @{ @"target": target, @"session":session, @"selected_count":@1,
+        @"document_id": Required(doc, @"rootFolder"),
         @"image_id": [NSString stringWithFormat:@"%lu", [image rowid]],
         @"variant_label": Required(v, @"name"),
         @"layer_name": [v hasLayerSelected] ? Required([v activeLocalAdjustmentLayer], @"name") : @"Background",
-        @"launched_at": @([[[NSClassFromString(@"NSRunningApplication") currentApplication] launchDate] timeIntervalSince1970]) };
+        @"launched_at": @(launched) };
     NSMutableDictionary *result = [NSMutableDictionary dictionary];
-    NSArray *keys = @[@"target", @"document_id", @"image_id", @"variant_label", @"layer_name", @"launched_at"];
+    NSArray *keys = @[@"target", @"session", @"selected_count", @"document_id", @"image_id", @"variant_label", @"layer_name", @"launched_at"];
     for (NSUInteger i = 0; i < [keys count]; i++) [result setObject:snapshot[keys[i]] forKey:keys[i]];
     @try { [result setObject:ViewerStamp() forKey:@"viewer_stamp"]; }
     @catch (id unavailable) { [result setObject:@{@"available":@NO} forKey:@"viewer_stamp"]; }
@@ -400,7 +409,7 @@ __attribute__((constructor)) static void Boot(void) {
             Queue = [NSOperationQueue new];
             NSString *ready = [Root stringByAppendingPathComponent:@"ready.json"];
             NSData *identity = [NSJSONSerialization dataWithJSONObject:@{ @"pid": @(getpid()), @"version": @"16.8.6.25", @"protocol": @2,
-                @"build_id": @C1AI_BUILD_ID } options:0 error:0];
+                @"build_id": @C1AI_BUILD_ID, @"color_policy":@"native-srgb-v1" } options:0 error:0];
             // Directory events wake only when a request is atomically posted;
             // there is no 150ms polling interval on the live analysis path.
             int descriptor = open([Root UTF8String], 0x8000 | 0x1000000 | 0x100); // O_EVTONLY | O_CLOEXEC | O_NOFOLLOW.

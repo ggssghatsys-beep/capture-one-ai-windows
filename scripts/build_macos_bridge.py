@@ -9,6 +9,7 @@ import tempfile
 
 from c1ai.macos_backend import inspect_installation, SUPPORTED_VERSION
 from c1ai.macos_ipc import state_directory, secure_directory
+from c1ai.macos_bridge import source_build_id
 
 
 def main():
@@ -23,8 +24,7 @@ def main():
     root = state_directory() / "native-bridge" / "v2"
     secure_directory(root)
     source = Path(__file__).resolve().parents[1] / "internal" / "macos" / "NativeBridge.m"
-    build_id = hashlib.sha256(b"".join((source.parent / name).read_bytes() for name in
-        ("NativeBridge.m", "GradientActions.inc", "MaskCommands.inc", "ColorActions.inc", "LayerActions.inc", "ViewerCache.inc", "FoundationTypes.h"))).hexdigest()
+    build_id = source_build_id()
     output = root / ("NativeBridge-" + build_id[:16] + ".dylib")
     zig = Path(args.compiler).name == "zig"
     compiler = [args.compiler, "cc"] if zig else [args.compiler]

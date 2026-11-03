@@ -7,6 +7,7 @@ from c1ai.windows_backend import NativeError
 
 
 def test_dragging_retries_promptly_but_disconnect_backs_off():
+    assert refresh_delay_ms({'freshness':{'state':'failed'},'error_code':'single_selection_required'})==200
     assert refresh_delay_ms({'freshness':{'state':'stale'},
         'error':'Selection or revision changed; late image discarded'})==50
     assert refresh_delay_ms({'freshness':{'state':'waiting'},

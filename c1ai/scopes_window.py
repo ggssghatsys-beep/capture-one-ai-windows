@@ -14,10 +14,13 @@ from PySide6.QtGui import QPixmap, QIcon, QPainter, QPen, QColor
 from PySide6.QtWidgets import (QApplication,QWidget,QVBoxLayout,QHBoxLayout,QLabel,QPushButton,
                                QComboBox,QFileDialog,QDoubleSpinBox,QDialog,QMenu,QToolButton,QSizePolicy,QStyle,QSystemTrayIcon)
 
+WAITING_ERRORS={'session_required','single_selection_required','SESSION_REQUIRED','SINGLE_SELECTION_REQUIRED'}
+
 
 def refresh_delay_ms(result):
     """A superseded frame is normal during dragging, not a disconnected source."""
     if result.get('retry_after_ms')==50:return 50
+    if result.get('error_code') in WAITING_ERRORS:return 200
     state=result.get('freshness',{}).get('state','failed')
     error=str(result.get('error') or '')
     superseded=any(text in error for text in (
@@ -121,8 +124,18 @@ class ScopeWindow(QWidget):
         self.state=QLabel('等待更新');self.state.setWordWrap(True);details_layout.addWidget(self.state)
         self.stats=QLabel();self.stats.setWordWrap(True);details_layout.addWidget(self.stats)
         self.note=QLabel();self.note.setWordWrap(True);details_layout.addWidget(self.note)
+        self.set_status('waiting','等待更新')
         read_stats=QPushButton('读取当前快速样本的数值');read_stats.clicked.connect(self.show_details);details_layout.addWidget(read_stats)
         self.timer=QTimer(self);self.timer.setSingleShot(True);self.timer.timeout.connect(self.tick);self.timer.start(50)
+
+    def set_status(self,state,text):
+        if self.paused:
+            state,text='paused','已暂停；保留的快照不代表当前调整'
+        color={'ready':'#86c99a','waiting':'#d9ad66','stale':'#d9ad66',
+               'empty':'#d9ad66','paused':'#d9ad66','failed':'#ef8585'}.get(state,'#ef8585')
+        self.state.setText(text)
+        self.status_dot.setStyleSheet('color:'+color)
+        self.status_dot.setToolTip(text)
 
     def show_details(self):
         self.details.show();self.details.raise_()
@@ -188,7 +201,7 @@ class ScopeWindow(QWidget):
         self.generation+=1
         self.pending=None
         self.displayed_id=None
-        self.state.setText('等待新请求；当前图表为上一份结果')
+        self.set_status('waiting','等待新请求；当前图表为上一份结果')
         self.next_delay=0
         if not self.paused and not self.suspended:self.timer.start(50)
 
@@ -198,9 +211,7 @@ class ScopeWindow(QWidget):
         self.timer.stop();self.next_delay=0
         if not self.paused and not self.suspended:self.timer.start(0)
         self.pause.setIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_MediaPlay if self.paused else QStyle.StandardPixmap.SP_MediaPause))
-        self.status_dot.setStyleSheet('color:#d9ad66' if self.paused else 'color:#8295aa')
-        self.status_dot.setToolTip('已暂停' if self.paused else '等待更新')
-        self.state.setText('已暂停；保留的快照不代表当前调整' if self.paused else '等待更新')
+        self.set_status('waiting','等待更新')
 
     def open_file(self):
         path,_=QFileDialog.getOpenFileName(self,'选择分析图像','','Image (*.png *.jpg *.jpeg *.tif *.tiff *.webp *.bmp)')
@@ -256,30 +267,30 @@ class ScopeWindow(QWidget):
         if generation!=self.generation:return
         received=time.perf_counter()
         sample_binding=(result.get('analysis') or {}).get('session_binding')
-        binding=result.get('current_session_binding') or sample_binding
-        if not self.path and binding is not None:
+        binding=result.get('current_session_binding',sample_binding)
+        if not self.path and ('current_session_binding' in result or sample_binding is not None):
             previous=self.source_binding
             self.source_binding=binding
-            if previous is not None and previous!=binding:
+            if previous!=binding and (previous is not None or self.record is not None):
                 # A Session boundary invalidates the old frame, pinned reference,
                 # and image-bound ROI, even when the same photo is reopened.
                 self.generation+=1;self.pending=None;self.record=None;self.reference=None
                 self.displayed_id=None;self.artifact_key=None;self.artifact_kind=None;self.pixmap=QPixmap()
-                self.canvas.clear();self.canvas.setText('正在连接当前 Session')
-                self.stats.clear();self.identity.setText(Path(binding['path']).stem)
+                self.canvas.clear();self.canvas.setText('正在连接当前 Session' if binding else '请在 C1 打开 Session')
+                self.stats.clear();self.note.clear();self.identity.setText(Path(binding['path']).stem if binding else '未打开 Session')
                 if self.region_dialog:self.region_dialog.close();self.region_dialog=None
                 self.pending_region=None
                 for box,value in zip(self.roi,[0,0,1,1]):
                     box.blockSignals(True);box.setValue(value);box.blockSignals(False)
                 self.next_delay=50
-                self.state.setText('Session 已切换，正在重新取样')
+                self.set_status('waiting','Session 已切换，正在重新取样' if binding else '等待打开 Session')
                 return
             if sample_binding is not None and sample_binding!=binding:
                 self.record=None;self.reference=None;self.displayed_id=None
                 self.artifact_key=None;self.pixmap=QPixmap();self.canvas.clear()
                 self.canvas.setText('等待当前 Session 取样');self.stats.clear()
-                self.identity.setText(Path(binding['path']).stem)
-                self.state.setText('等待当前 Session 取样')
+                self.identity.setText(Path(binding['path']).stem if binding else '未打开 Session')
+                self.set_status('waiting','等待当前 Session 取样')
                 self.next_delay=refresh_delay_ms(result)
                 return
         if result.get('_purpose')=='apply_roi':
@@ -303,19 +314,21 @@ class ScopeWindow(QWidget):
             return
         if result.get('reference_id'):self.reference=result['reference_id']
         state=result.get('freshness',{}).get('state','failed')
+        if result.get('error_code') in WAITING_ERRORS:
+            state='waiting'
         delay=refresh_delay_ms(result)
         self.next_delay=delay
         names={'ready':'可用','waiting':'等待更新','stale':'已过期：保留旧结果','failed':'连接或分析失败','empty':'当前蒙版与 ROI 没有覆盖像素'}
         detail=result.get('error') or result.get('image_error') or ''
-        self.state.setText(names.get(state,state)+((' · '+str(detail)) if detail else ''))
-        self.status_dot.setStyleSheet('color:'+{'ready':'#86c99a','waiting':'#d9ad66','stale':'#d9ad66','failed':'#ef8585'}.get(state,'#ef8585'))
-        self.status_dot.setToolTip(self.state.text())
+        self.set_status(state,names.get(state,state)+((' · '+str(detail)) if detail else ''))
         data=result.get('analysis')
         old_target=(data or {}).get('target')
         if state=='empty' or result.get('current_target') and old_target and result['current_target']!=old_target:
             self.canvas.clear();self.canvas.setText('等待当前图层分析' if state!='empty' else names['empty'])
             self.pixmap=QPixmap();self.artifact_key=None;self.displayed_id=None
-            if state!='empty':return
+            if state!='empty':
+                self.set_status('waiting','等待当前照片／图层分析')
+                return
         if not data:
             if not result.get('unchanged'):self.record_latency(result,received,delay)
             return
@@ -335,7 +348,8 @@ class ScopeWindow(QWidget):
             line+='\n参考差值：'+(f"亮度均值 {diff['statistics']['luma']['mean_percent']:+.2f} 个百分点" if 'statistics' in diff else diff['reason'])
         self.stats.setText(line)
         color_note=('C1 当前画面按 ICC 转为 sRGB，含校样显示效果' if data.get('sample_source')=='viewer_cache' else
-                    '无 ICC，假定 sRGB；色彩未独立确认' if data['color']['confirmation'].startswith('assumed') else '已按嵌入 ICC 转换')
+                    '无 ICC，假定 sRGB；色彩未独立确认' if data['color']['confirmation'].startswith('assumed') else
+                    '原生桥已确认 sRGB 输出' if data['color']['confirmation']=='verified_native_srgb_output' else '已按嵌入 ICC 转换')
         self.note.setText('8 位预览 · '+color_note+' → '+data['color']['analysis_space']+' · 近白比例不代表 RAW 高光不可恢复'+(' · 按当前图层蒙版灰度加权，肤色线不是皮肤检测' if data.get('analysis_scope')=='active_layer' else ''))
         artifact=result.get('artifact')
         if artifact:

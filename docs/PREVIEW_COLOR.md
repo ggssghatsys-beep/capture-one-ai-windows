@@ -21,7 +21,7 @@ PNG 和 BGRA8 从同一转换后的位图产生。Python 检查原生色彩凭�
 源码和 Python 包更新后还需要更新原生桥。只更新 Python、继续使用旧桥会明确报告 `native_color_unverified` / `NATIVE_COLOR_UNVERIFIED`，不会交付无法确认的原生照片。
 
 - Windows：按 [安装与升级](INSTALL.md) 处理运行中的 owner，执行 `internal/build.ps1` 后重新连接。启动钩子未变，已加载桥接的 C1 不需要为本次修复重启。
-- Mac：在原来已配置桥的安装环境中执行 `.venv/bin/python scripts/build_macos_bridge.py --enable`，然后重连 MCP／重新打开分析窗口。首次配置和权限按 [Mac 安装说明](INSTALL_MAC.md)。不迁移其他机器的连接令牌或候选登记。
+- Mac：在原来已配置桥的安装环境中执行 `.venv/bin/python scripts/build_macos_bridge.py --enable`。如果当前 C1 已加载旧构建，需要先保存并正常重启 C1，再重连 MCP／重新打开分析窗口；不能在同一宿主覆盖旧库。首次配置和权限按 [Mac 安装说明](INSTALL_MAC.md)。不迁移其他机器的连接令牌或候选登记。
 
 这些步骤不修改照片、相机 ICC 选择、胶片曲线、显示器配置或系统校准。
 
@@ -29,4 +29,4 @@ PNG 和 BGRA8 从同一转换后的位图产生。Python 检查原生色彩凭�
 
 Windows 16.8.6.3784 已在本机真实照片核对：PNG 内嵌 sRGB ICC，PNG 与分析 BGRA8 逐像素一致，调整参数与选择未变。此前固定照片、参数和修订的诊断中，指定 sRGB 并将查看器样本按实际显示器 ICC 换算后，匹配区域平均通道差从 10.32 降至 0.27（8 位 0–255）。这是本机一致性检查，不是显示器校准或所有相机的独立认证。
 
-Mac 修改通过共享 Python 色彩检查与 arm64 macOS 目标交叉编译；本次没有 Mac 宿主，新增转换与拒绝路径尚未实机验收，不继承之前版本的 Mac 实机结论。
+2026-11-03 补充 Mac 实测：Apple Silicon / macOS 15.7.4 / C1 16.8.6.25 / Session，已加载新版桥。相同照片、修订与尺寸下，原生 PNG／BGRA8 逐像素一致，PNG 内嵌有效 sRGB ICC；Viewer 快速分析与独立渲染均返回已确认的色彩约定。副本曝光修改后画面变化，恢复后的 PNG 与修改前一致。旧桥拒绝路径另有隔离检查；不将这些一致性检查扩大为显示器校准或其他相机／版本认证。

@@ -20,8 +20,11 @@ from .client import call
 from .formatting import compact_response
 from .owner import state_directory
 from .guidance import MCP_INSTRUCTIONS
+from . import __version__
 
 mcp = FastMCP("Capture One AI", instructions=MCP_INSTRUCTIONS)
+# FastMCP otherwise reports the SDK version as this application's version.
+mcp._mcp_server.version = __version__
 
 
 def _call(command: str, **fields) -> dict[str, Any]:

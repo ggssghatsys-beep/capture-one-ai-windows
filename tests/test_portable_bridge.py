@@ -49,6 +49,18 @@ def test_mcp_read_keeps_native_session_identity():
     assert compact_response(response, command='read')['session_binding'] == binding
 
 
+def test_missing_current_binding_cannot_validate_a_bound_module_token(tmp_path):
+    target={'instance':{},'document':{'path':'session'},'image':{'path':'photo'},'variant':{},'layer':'Background'}
+    current={'target':target,'values':{}}
+    core=Core(SimpleNamespace(observe=lambda fields:current),state_dir=tmp_path)
+    try:
+        token=core.journal.observe({**current,'module':'curves','state':{},'session_binding':{'generation':'old'}})
+        with pytest.raises(Refused) as failure:
+            core._preflight({'command':'adjust','module':'curves','target':target,'observation_token':token})
+        assert failure.value.code=='session_changed'
+    finally:core.close()
+
+
 @pytest.mark.parametrize('navigation', [False, True])
 def test_stale_session_token_refused_before_any_write(tmp_path, navigation):
     binder = SessionBinding({})

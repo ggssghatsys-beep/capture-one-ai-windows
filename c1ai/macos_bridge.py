@@ -19,6 +19,16 @@ import uuid
 from .contracts import Refused
 from .macos_ipc import secure_directory
 
+BRIDGE_SOURCES = ("NativeBridge.m", "GradientActions.inc", "MaskCommands.inc", "ColorActions.inc",
+                  "LayerActions.inc", "ViewerCache.inc", "FoundationTypes.h")
+
+
+def source_build_id():
+    source = Path(__file__).resolve().parents[1] / "internal" / "macos"
+    if not source.is_dir():
+        return None
+    return hashlib.sha256(b"".join((source / name).read_bytes() for name in BRIDGE_SOURCES)).hexdigest()
+
 
 def _private_file(path):
     info = path.lstat()
@@ -42,6 +52,7 @@ class NativeBridge:
         self._channel_lock = threading.RLock()
         self._render_lock = threading.RLock()
         self._artifact_lock = threading.RLock()
+        self._source_build_id = source_build_id()
 
     def _ready(self):
         try:
@@ -56,11 +67,15 @@ class NativeBridge:
         instance = target["instance"]
         if instance["version"] != config["capture_one_version"]:
             raise Refused("unsupported_bridge_version", "Native bridge does not match this Capture One build")
+        if self._source_build_id is not None and config.get("build_id") != self._source_build_id:
+            raise Refused("bridge_build_required", "Rebuild and enable the Mac native bridge for this source version")
         secure_directory(self.root.parent); secure_directory(self.root)
         ready = self._ready()
         if ready.get("pid") == instance["pid"]:
             if ready.get("build_id") != config["build_id"] or ready.get("protocol") != 2:
                 raise Refused("bridge_restart_required", "Restart Capture One normally to use the updated native bridge")
+            if ready.get("color_policy") != "native-srgb-v1":
+                raise Refused("native_color_unverified", "Update the Mac native bridge for confirmed sRGB output")
             return
         library = Path(config["path"])
         if library.resolve().parent != self.root.resolve() or hashlib.sha256(_private_file(library)).hexdigest() != config["sha256"]:
@@ -164,10 +179,10 @@ class NativeBridge:
         result = self.call(target, "inspect")
         native = result["target"]
         layer = target["layer"]
-        expected_layer = layer["native_id"] if isinstance(layer, dict) else "Background"
+        expected_layer = layer["native_id"] if isinstance(layer, dict) else "Background" if layer is not None else None
         if (native["pid"] != target["instance"]["pid"] or native["document_path"] != target["document"]["path"]
                 or native["variant_id"] != target["variant"]["id"] or native["image_path"] != target["image"]["path"]
-                or native["layer_uuid"].lower() != expected_layer.lower()):
+                or expected_layer is not None and native["layer_uuid"].lower() != expected_layer.lower()):
             raise Refused("bridge_target_changed", "Native bridge target differs from the official photo/layer observation")
         return result
 

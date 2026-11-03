@@ -26,7 +26,7 @@ def failure_details(error):
         'analysis requires exactly one selected variant','native value unavailable: primaryVariant',
         'Viewer cache changed','Viewer cache identity changed','Native display target changed','Native preview revision changed'))
     return {'error':message,'error_code':getattr(error,'code',None),
-            **({'current_session_binding':details['session_binding']} if isinstance(details,dict) and isinstance(details.get('session_binding'),dict) else {}),
+            **({'current_session_binding':details['session_binding']} if isinstance(details,dict) and 'session_binding' in details else {}),
             **({'retry_after_ms':50} if transient else {})}
 
 
@@ -63,7 +63,7 @@ class AnalysisService:
         return response
 
     def _follow_binding(self,binding):
-        if binding is not None and self.reference_id in self.records:
+        if self.reference_id in self.records:
             if self.records[self.reference_id]['result'].get('session_binding')!=binding:
                 self.reference_id=None
 
@@ -113,7 +113,8 @@ class AnalysisService:
             stamp = source.observe()
         except Exception as error:
             details=failure_details(error)
-            self._follow_binding(details.get('current_session_binding'))
+            if 'current_session_binding' in details:
+                self._follow_binding(details['current_session_binding'])
             return self._response(record,'stale' if record else 'failed',request,**details)
         if source.name != 'file':
             # Keep the existing refusal contract: a target mismatch must not return an image.

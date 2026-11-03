@@ -208,7 +208,7 @@ class Core:
             # expected controls/parameters immediately at dispatch and reads back
             # once afterward. Only the photo target needs a fresh check here.
             current = self.backend.observe([])
-            if current.get('session_binding') is not None and saved.get('session_binding') != current['session_binding']:
+            if saved.get('session_binding') != current.get('session_binding'):
                 raise Refused('session_changed', 'Session binding changed; read this module again before editing')
             self._target(saved["target"], current["target"])
             self._target(request["target"], current["target"])
@@ -217,7 +217,7 @@ class Core:
             observation = self._observe(list(saved["values"]))
             self._target(request["target"], observation["target"])
             if observation["observation_token"] != request["observation_token"]:
-                raise Refused("stale_observation", "Values changed after the supplied observation")
+                raise Refused("stale_observation", "Photo state or Session binding changed; read again before editing")
         return observation
 
     def _batch(self, request):

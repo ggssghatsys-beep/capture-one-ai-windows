@@ -87,6 +87,19 @@ class MacOSBackend:
         self._bridge = None
         self._bridge_init_lock = threading.Lock()
         self._analysis_instance = None
+        from .session_binding import SessionBinding
+        self.session_binding = SessionBinding({})
+        self._session_lock = threading.RLock()
+
+    def _accept_session(self, native, instance):
+        with self._session_lock:
+            return self.session_binding.accept(native, instance)
+
+    def _bind_session(self, observation, native):
+        binding = self._accept_session(native, observation["target"]["instance"])
+        if observation.get("session_binding") is not None and observation["session_binding"] != binding:
+            raise Refused("session_changed", "Session changed while reading; read again before editing")
+        observation["session_binding"] = binding
 
     def native_bridge(self):
         if self._bridge is None:
@@ -99,14 +112,14 @@ class MacOSBackend:
     def _bridge_observation(self, observation):
         from .macos_bridge import configured
         if configured(self.state_dir):
-            try:
-                native = self.native_bridge().inspect(observation["target"])
-                observation["native_context"].update(bridge_target=native["target"],
-                    process_revision=native["target"]["revision"], raw_dimensions=native["raw_dimensions"],
-                    bridge_mask_actions=native.get("mask_actions", []),
-                    bridge_layer_actions=native.get("layer_actions", []))
-            except Refused as error:
-                observation["native_context"]["bridge_unavailable"] = {"code": error.code, "message": str(error)}
+            # A configured bridge supplies the Session generation as well as
+            # pixels. Busy/unavailable must not issue an unbound write token.
+            native = self.native_bridge().inspect(observation["target"])
+            self._bind_session(observation, native["target"])
+            observation["native_context"].update(bridge_target=native["target"],
+                process_revision=native["target"]["revision"], raw_dimensions=native["raw_dimensions"],
+                bridge_mask_actions=native.get("mask_actions", []),
+                bridge_layer_actions=native.get("layer_actions", []))
         return observation
 
     def analysis_observe(self):
@@ -142,12 +155,26 @@ class MacOSBackend:
                 version = plistlib.load(stream)["CFBundleShortVersionString"]
             instance = {"platform": "macos", "pid": candidates[0], "version": version}
         snapshot = bridge.call({"instance": instance}, "analysis_snapshot")
-        native = snapshot["target"]
-        if (native["pid"] != instance["pid"] or ("started_at" in instance and
-                not math.isclose(float(instance["started_at"]), snapshot["launched_at"], rel_tol=0, abs_tol=1e-6))):
+        if ("started_at" in instance and
+                not math.isclose(float(instance["started_at"]), snapshot["launched_at"], rel_tol=0, abs_tol=1e-6)):
             raise Refused("analysis_instance_changed", "Native analysis process identity changed")
         instance = {**instance, "started_at": instance.get("started_at", str(snapshot["launched_at"]))}
         self._analysis_instance = instance
+        if not snapshot.get("session"):
+            with self._session_lock:
+                self.session_binding.current = None
+            error = Refused("session_required", "Open a Session and select one photo")
+            error.details = {"session_binding": None}
+            raise error
+        binding = self._accept_session(snapshot["session"], instance)
+        if not snapshot.get("target") or snapshot.get("selected_count") != 1:
+            error = Refused("single_selection_required", "Select exactly one photo in the current Session")
+            error.details = {"session_binding": binding}
+            raise error
+        native = snapshot["target"]
+        if native["pid"] != instance["pid"] or any(native.get(k) != snapshot["session"].get(k)
+                                                   for k in ("document_path", "document_uuid")):
+            raise Refused("analysis_instance_changed", "Native analysis Session identity changed")
         uid = native["layer_uuid"]
         if uid == "Background":
             layer = "Background"
@@ -168,7 +195,7 @@ class MacOSBackend:
                   "document": {"id": snapshot["document_id"], "path": native["document_path"]},
                   "image": {"id": snapshot["image_id"], "path": native["image_path"]},
                   "variant": {"id": native["variant_id"], "label": snapshot["variant_label"]}, "layer": layer}
-        return {"target": target, "values": {}, "native_context": {
+        return {"target": target, "session_binding": binding, "values": {}, "native_context": {
                     "analysis_native": True, "bridge_target": native, "process_revision": native["revision"],
                     "viewer_stamp": snapshot.get("viewer_stamp"),
                     "image_path": native["image_path"], "layer_state": {"selected_layer": selected}},
@@ -252,6 +279,14 @@ class MacOSBackend:
                     {"local_module_read", "local_module_set", "local_read", "local_set"} else
                     "representative_layer_and_mask_operations", session_saved_for_identity=True,
                 concurrent_layer_structure_changes_supported=False, render_verified=False)
+        if mutation:
+            try:
+                self._bridge_observation(observation)
+            except Exception as error:
+                # Apple Events already completed. A busy readback cannot turn
+                # an applied edit into a certified not-dispatched operation.
+                error.dispatched = True
+                raise
         return payload
 
     def observe(self, fields):
@@ -470,7 +505,11 @@ class MacOSBackend:
         return result
 
     def context(self):
+        from . import __version__
         result = {"environment": inspect_installation(), "target": None,
+                  "bridge": {"core_version": __version__, "protocol": 2,
+                             "color_policy": "native-srgb-v1",
+                             "source_build_id": self.native_bridge()._source_build_id},
                   "editing_ready": False, "capabilities": self.capabilities_for(),
                   "reason": "registered_candidate_required"}
         try:
@@ -482,14 +521,14 @@ class MacOSBackend:
                 if ({**observation["target"], "layer": None} != inventory["observation"]["target"]
                         or not self._local(observation)):
                     raise Refused("target_changed", "Photo or local layer scope changed while reading context")
-                result.update(target=observation["target"], reason="local_adjustments_and_layer_navigation",
+                result.update(target=observation["target"], session_binding=observation.get("session_binding"), reason="local_adjustments_and_layer_navigation",
                               capabilities=self.capabilities_for(observation), editing_ready=self._qualified(observation),
                               guidance="Read layers, select a returned layer_ref, then read the desired module before editing. Do not concurrently reorder/delete layers.")
                 return result
             observation = self.observe(SUPPORTED_FIELDS)
             if {**observation["target"], "layer": None} != inventory["observation"]["target"]:
                 raise Refused("target_changed", "Photo changed while reading context")
-            result.update(target=observation["target"], evidence=observation["evidence"],
+            result.update(target=observation["target"], session_binding=observation.get("session_binding"), evidence=observation["evidence"],
                           native_connection="available", capabilities=self.capabilities_for(observation),
                           editing_ready=self._qualified(observation))
             if result["editing_ready"]:
@@ -499,12 +538,13 @@ class MacOSBackend:
                           connection_error={"code": error.code, "message": str(error)})
         return result
 
-    @staticmethod
-    def _navigation_observation(payload):
+    def _navigation_observation(self, payload):
         observed = payload["observation"]
-        return {**observed, "navigation": True,
+        result = {**observed, "navigation": True,
                 "values": {"collection": payload["result"]["collection"],
                            "selected_ids": [observed["target"]["variant"]["id"]]}}
+        # A successful native mutation was bound at its return boundary.
+        return result if observed.get("session_binding") is not None else self._bridge_observation(result)
 
     def call(self, operation, **payload):
         raise Refused("unsupported", "Mac UI fallback is not implemented")
@@ -515,11 +555,11 @@ class MacOSBackend:
             payload = self._native("inventory", [], scope=scope, offset=offset, limit=limit)
             result, observed = payload["result"], payload["observation"]
             collection = result["collection"]
+            navigation = self._navigation_observation(payload)
             token = digest({"instance": observed["target"]["instance"], "document": observed["target"]["document"],
-                            "collection": collection, "scope": scope})
+                            "session_binding": navigation.get("session_binding"), "collection": collection, "scope": scope})
             if request.get("collection_token") and request["collection_token"] != token:
                 raise Refused("collection_changed", "Collection, filter or sort changed; restart pagination")
-            navigation = self._navigation_observation(payload)
             return {"status": "ok", "items": result["items"], "scope": scope,
                     "collection_id": collection["id"], "collection_name": collection["name"],
                     "collection_token": token, "total": result["total"], "offset": offset,
@@ -620,7 +660,7 @@ class MacOSBackend:
                 raise
             payload = self._native("local_module_read", [], module=module)
         result = self._module_observation(module, payload)
-        return self._color_editor_observation(result) if module == "color_mixer" else result
+        return self._color_editor_observation(result) if module == "color_mixer" else self._bridge_observation(result)
 
     @staticmethod
     def _saved_color_editor(observation):
@@ -671,6 +711,7 @@ class MacOSBackend:
         if configured(self.state_dir):
             from .macos_native_color import enrich_state
             native = self.native_bridge().inspect(result["target"])
+            self._bind_session(result, native["target"])
             live = self.native_bridge().call(result["target"], "color_read", target=native["target"])
             if live["target"] != native["target"]:
                 raise Refused("color_editor_state_changed", "Native Color Editor changed during read")
@@ -2004,84 +2045,88 @@ class MacOSBackend:
                         error.dispatched = False
                         raise
                 payload = self._native(module + "_adjust", [], observation, patch=patch)
-                native_mask_ack = payload.get("result", {}).get("native_mask_command_succeeded")
-                mask_evidence = {}
-                after = self._module_observation(module, payload)
-                if module == "masks":
-                    bound_target, bound_state = after["target"], after["state"]
-                    def check_bound(current):
-                        state = {k: v for k, v in current["state"].items() if k != "masks"}
-                        if current["target"] != bound_target or state != bound_state:
-                            raise Refused("target_changed", "Native layer or adjustment changed while waiting for saved mask data")
-                    deadline = time.monotonic() + 5
-                    while True:
-                        try:
-                            after = self._mask_observation(payload)
-                            check_bound(after)
-                            break
-                        except Refused as error:
-                            if error.code not in {"mask_state_unavailable", "mask_state_changed"} or time.monotonic() >= deadline:
-                                raise
+                try:
+                    native_mask_ack = payload.get("result", {}).get("native_mask_command_succeeded")
+                    mask_evidence = {}
+                    after = self._module_observation(module, payload)
+                    if module == "masks":
+                        bound_target, bound_state = after["target"], after["state"]
+                        def check_bound(current):
+                            state = {k: v for k, v in current["state"].items() if k != "masks"}
+                            if current["target"] != bound_target or state != bound_state:
+                                raise Refused("target_changed", "Native layer or adjustment changed while waiting for saved mask data")
+                        deadline = time.monotonic() + 5
+                        while True:
+                            try:
+                                after = self._mask_observation(payload)
+                                check_bound(after)
+                                break
+                            except Refused as error:
+                                if error.code not in {"mask_state_unavailable", "mask_state_changed"} or time.monotonic() >= deadline:
+                                    raise
+                                time.sleep(.25)
+                                payload = self._native("masks_read", [])
+                        selected = after["state"]["selected_layer"]["native_id"]
+                        def verified(current):
+                            nonlocal mask_evidence
+                            mask = next(m for m in current["state"]["masks"] if m["uuid"] == selected)
+                            if patch["action"] in {"fill", "clear"}:
+                                return mask["constant"]["verified"] and mask["constant"]["density"] == (1 if patch["action"] == "fill" else 0)
+                            if patch["action"] == "invert":
+                                old = next(m for m in observation["state"]["masks"] if m["uuid"] == selected)
+                                if old["constant"]["verified"] and old["constant"]["density"] in (0, 1):
+                                    return mask["constant"]["verified"] and mask["constant"]["density"] == 1 - old["constant"]["density"]
+                                from .macos_mask_actions import verify_parameter_invert, verify_raster_invert
+                                try:
+                                    verify_invert = verify_parameter_invert if invert_parameter_kind is not None else verify_raster_invert
+                                    mask_evidence = verify_invert(observation["state"], current["state"], observation["state"]["selected_layer"])
+                                    return True
+                                except Refused:
+                                    return False
+                            if patch["action"] in {"feather", "refine"}:
+                                from .macos_mask_actions import verify_native_raster_filter
+                                try:
+                                    mask_evidence = verify_native_raster_filter(observation["state"], current["state"],
+                                        observation["state"]["selected_layer"], patch["action"], patch["radius"],
+                                        native_command_succeeded=native_mask_ack == {"action": patch["action"], "amount": patch["radius"]})
+                                    return True
+                                except Refused:
+                                    return False
+                            if patch["action"] in {"create_subject", "create_background"}:
+                                generator = "AISubject" if patch["action"] == "create_subject" else "AIBackground"
+                                return mask["structure"].get("metadata", {}).get("MaskGenerator") == generator and "map" in mask["structure"]
+                            if patch["action"] == "copy":
+                                return self._verified_mask_copy(observation, current, patch)
+                            if patch["action"] == "clear_luma_range":
+                                from .macos_mask_actions import verify_clear_luma_range
+                                try:
+                                    verify_clear_luma_range(observation["state"], current["state"], observation["state"]["selected_layer"])
+                                    return True
+                                except Refused:
+                                    return False
+                            return True  # Native creation / all seven luma values already checked.
+                        deadline = time.monotonic() + 5
+                        while not verified(after) and time.monotonic() < deadline:
                             time.sleep(.25)
-                            payload = self._native("masks_read", [])
-                    selected = after["state"]["selected_layer"]["native_id"]
-                    def verified(current):
-                        nonlocal mask_evidence
-                        mask = next(m for m in current["state"]["masks"] if m["uuid"] == selected)
-                        if patch["action"] in {"fill", "clear"}:
-                            return mask["constant"]["verified"] and mask["constant"]["density"] == (1 if patch["action"] == "fill" else 0)
-                        if patch["action"] == "invert":
-                            old = next(m for m in observation["state"]["masks"] if m["uuid"] == selected)
-                            if old["constant"]["verified"] and old["constant"]["density"] in (0, 1):
-                                return mask["constant"]["verified"] and mask["constant"]["density"] == 1 - old["constant"]["density"]
-                            from .macos_mask_actions import verify_parameter_invert, verify_raster_invert
-                            try:
-                                verify_invert = verify_parameter_invert if invert_parameter_kind is not None else verify_raster_invert
-                                mask_evidence = verify_invert(observation["state"], current["state"], observation["state"]["selected_layer"])
-                                return True
-                            except Refused:
-                                return False
-                        if patch["action"] in {"feather", "refine"}:
-                            from .macos_mask_actions import verify_native_raster_filter
-                            try:
-                                mask_evidence = verify_native_raster_filter(observation["state"], current["state"],
-                                    observation["state"]["selected_layer"], patch["action"], patch["radius"],
-                                    native_command_succeeded=native_mask_ack == {"action": patch["action"], "amount": patch["radius"]})
-                                return True
-                            except Refused:
-                                return False
-                        if patch["action"] in {"create_subject", "create_background"}:
-                            generator = "AISubject" if patch["action"] == "create_subject" else "AIBackground"
-                            return mask["structure"].get("metadata", {}).get("MaskGenerator") == generator and "map" in mask["structure"]
-                        if patch["action"] == "copy":
-                            return self._verified_mask_copy(observation, current, patch)
-                        if patch["action"] == "clear_luma_range":
-                            from .macos_mask_actions import verify_clear_luma_range
-                            try:
-                                verify_clear_luma_range(observation["state"], current["state"], observation["state"]["selected_layer"])
-                                return True
-                            except Refused:
-                                return False
-                        return True  # Native creation / all seven luma values already checked.
-                    deadline = time.monotonic() + 5
-                    while not verified(after) and time.monotonic() < deadline:
-                        time.sleep(.25)
-                        after = self.observe_module("masks")  # Read only; never repeat the command.
-                        check_bound(after)
-                    original_id = observation["state"]["selected_layer"]["native_id"]
-                    unchanged = {m["uuid"]: m["content_sha256"] for m in observation["state"]["masks"]
-                                 if patch["action"].startswith("create_") or m["uuid"] != original_id}
-                    actual = {m["uuid"]: m["content_sha256"] for m in after["state"]["masks"]}
-                    if not verified(after) or any(actual.get(k) != v for k, v in unchanged.items()):
-                        raise Refused("mask_readback_mismatch", "Saved mask content does not verify the requested change")
-                if module == "layers" and after["target"]["instance"].get("platform") == "macos":
-                    after["native_context"]["duplicate_snapshot"] = self._duplicate_snapshot(after)
-                return {"status": "control_confirmed", "after": after, "requested_result_verified": True,
-                        "evidence": {"model_verified": True, "render_verified": False, **mask_evidence},
-                        "target_transition": {"before": observation["target"], "after": after["target"],
-                            "evidence": {"copy_identity": "native_mask_uuid_replaced_by_copy" if module == "masks" and patch["action"] == "copy" else None,
-                                "before_layers": observation["state"]["layers"],
-                                "after_layers": after["state"]["layers"], "selected_layer": after["state"]["selected_layer"]}}}
+                            after = self.observe_module("masks")  # Read only; never repeat the command.
+                            check_bound(after)
+                        original_id = observation["state"]["selected_layer"]["native_id"]
+                        unchanged = {m["uuid"]: m["content_sha256"] for m in observation["state"]["masks"]
+                                     if patch["action"].startswith("create_") or m["uuid"] != original_id}
+                        actual = {m["uuid"]: m["content_sha256"] for m in after["state"]["masks"]}
+                        if not verified(after) or any(actual.get(k) != v for k, v in unchanged.items()):
+                            raise Refused("mask_readback_mismatch", "Saved mask content does not verify the requested change")
+                    if module == "layers" and after["target"]["instance"].get("platform") == "macos":
+                        after["native_context"]["duplicate_snapshot"] = self._duplicate_snapshot(after)
+                    return {"status": "control_confirmed", "after": after, "requested_result_verified": True,
+                            "evidence": {"model_verified": True, "render_verified": False, **mask_evidence},
+                            "target_transition": {"before": observation["target"], "after": after["target"],
+                                "evidence": {"copy_identity": "native_mask_uuid_replaced_by_copy" if module == "masks" and patch["action"] == "copy" else None,
+                                    "before_layers": observation["state"]["layers"],
+                                    "after_layers": after["state"]["layers"], "selected_layer": after["state"]["selected_layer"]}}}
+                except Exception as error:
+                    error.dispatched = True
+                    raise
             return self.action_hook(module + "." + patch["action"], change_layer, {"patch": patch})
         if module not in IMPLEMENTED_MODULES or not self._qualified(observation):
             raise Refused("unqualified_candidate", "Structured writes require a registered current-instance Mac candidate")

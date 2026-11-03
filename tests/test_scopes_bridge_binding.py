@@ -86,7 +86,8 @@ def test_service_exposes_new_binding_even_while_image_is_unavailable(tmp_path,mo
     assert service.reference_id is None
 
 
-def test_window_clears_old_frame_reference_and_roi_on_session_switch(tmp_path):
+@pytest.mark.parametrize('new_binding',[binding('B'),None])
+def test_window_clears_old_frame_reference_and_roi_on_session_switch(tmp_path,new_binding):
     app=QApplication.instance() or ScopeApplication([])
     settings=QSettings(str(tmp_path/'scopes.ini'),QSettings.Format.IniFormat)
     window=ScopeWindow(settings=settings);window.timer.stop()
@@ -96,13 +97,16 @@ def test_window_clears_old_frame_reference_and_roi_on_session_switch(tmp_path):
         window.displayed_id='old';window.canvas.setText('old chart')
         window.roi[0].blockSignals(True);window.roi[0].setValue(.2);window.roi[0].blockSignals(False)
         previous=window.generation
-        result={'current_session_binding':binding('B'),'analysis':{'session_binding':binding('A')},
+        window.set_status('ready','可用')
+        result={'current_session_binding':new_binding,'analysis':{'session_binding':binding('A')},
                 'freshness':{'state':'stale'},'error':'Select one photo'}
         window.receive(previous,result)
-        assert window.generation>previous and window.source_binding==binding('B')
+        assert window.generation>previous and window.source_binding==new_binding
         assert window.record is None and window.reference is None and window.displayed_id is None
         assert [box.value() for box in window.roi]==[0,0,1,1]
         assert window.canvas.text()!='old chart'
+        assert '#d9ad66' in window.status_dot.styleSheet()
+        assert window.status_dot.toolTip()==window.state.text()
         current=window.generation
         window.receive(current,result)
         assert window.generation==current and window.record is None

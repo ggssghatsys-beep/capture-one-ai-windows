@@ -12,9 +12,11 @@
 
 ## 当前基线
 
+- 2026-11-03：Mac 已同步 GitHub 0.4.0a3，完成新版 sRGB 桥、Session UUID／绑定代次、模块与写后凭据及波形状态灯的代表性实机验收。Mac 仍仅允许副本编辑；Windows 的原版本授权与自动选包不自动继承到 Mac。准确范围、114 项相关回归及 AU 复核见 MAC_STATUS 开头。
+
 - 0.4.0a1 合并 Mac 原生源码预览与 Windows 既有版本。安装 AI 先询问是否创建波形桌面入口，已明确选择则不重复问；Mac 使用 scripts/install_macos.py（--desktop-scopes 显式创建），Windows 保留 -WithScopes，并支持 -NoScopesShortcut。发布范围以 README／INSTALL_MAC／MAC_STATUS 开头为准，下面旧版本记录保留历史证据。
 
-- 当前版本 0.3.0a3 / tag `v0.3.0-alpha.3` 新增直接填写 API 的 AI 窗口，见 docs/AI_WINDOW.md。新窗口已做本机 C1 副本调用验收，真实模型/API 尚未联调。模型列表和思考等级从服务查询，禁止预填固定清单冒充支持能力。
+- 历史版本 0.3.0a3 / tag `v0.3.0-alpha.3` 新增直接填写 API 的 AI 窗口，见 docs/AI_WINDOW.md。新窗口已做本机 C1 副本调用验收，真实模型/API 尚未联调。模型列表和思考等级从服务查询，禁止预填固定清单冒充支持能力。
 
 - 历史版本 0.3.0a2 / tag `v0.3.0-alpha.2`，以及 0.3.0a1、0.2.0a1 保留。实测 Windows + Capture One 16.8.6.3784 + Session。
 - 分析窗口默认跟随当前图层蒙版；MCP analyze_image 保留默认整图语义，局部分析显式传 analysis_scope=active_layer。肤色参考不是皮肤检测，空蒙版不回退整图；详情见 docs/SCOPES.md。

@@ -7,6 +7,24 @@ from c1ai.macos_bridge import NativeBridge
 from c1ai.macos_mask_actions import verify_gradient_selection_point
 
 
+@pytest.mark.parametrize('mismatch,code', [('source','bridge_build_required'),
+    ('loaded','bridge_restart_required'),('color','native_color_unverified')])
+def test_bridge_version_mismatch_refuses_before_native_dispatch(tmp_path,monkeypatch,mismatch,code):
+    import json,os
+    bridge=NativeBridge(tmp_path)
+    bridge._source_build_id='current'
+    config={'enabled':True,'capture_one_version':'16.8.6.25',
+            'build_id':'old' if mismatch=='source' else 'current'}
+    path=tmp_path/'macos-bridge.json';path.write_text(json.dumps(config));path.chmod(0o600)
+    monkeypatch.setattr(bridge,'_ready',lambda: {'pid':os.getpid(),'protocol':2,
+        'build_id':'old' if mismatch=='loaded' else 'current',
+        'color_policy':'old' if mismatch=='color' else 'native-srgb-v1'})
+    with pytest.raises(Refused) as failure:
+        bridge.call({'instance':{'pid':os.getpid(),'version':'16.8.6.25'}},'inspect')
+    assert failure.value.code==code and failure.value.dispatched is False
+    assert not (bridge.root/'request.json').exists()
+
+
 def test_native_file_channel_busy_is_short_read_retry_without_dispatch(tmp_path, monkeypatch):
     import fcntl
     from c1ai.analysis_service import failure_details
@@ -20,6 +38,101 @@ def test_native_file_channel_busy_is_short_read_retry_without_dispatch(tmp_path,
     assert failure.value.dispatched is False
     assert failure_details(failure.value)["retry_after_ms"] == 50
     assert not (bridge.root / "request.json").exists()
+
+
+def test_busy_configured_bridge_cannot_issue_or_use_an_unbound_token(tmp_path,monkeypatch):
+    from types import SimpleNamespace
+    from c1ai.core import Core
+    from c1ai.macos_backend import MacOSBackend
+    backend=MacOSBackend(tmp_path)
+    official={'target':{'instance':{'platform':'macos'},'document':{'path':'session.cosessiondb'},
+                       'image':{'path':'photo.NEF'},'variant':{'id':'one'},'layer':'Background'},
+              'values':{},'native_context':{}}
+    def busy(target):raise Refused('bridge_request_pending','Read again shortly')
+    backend._bridge=SimpleNamespace(inspect=busy)
+    monkeypatch.setattr('c1ai.macos_bridge.configured',lambda root: True)
+    monkeypatch.setattr(backend,'_native',lambda *args,**kw: {'observation':deepcopy(official)})
+    core=Core(backend,tmp_path)
+    try:
+        result=core.dispatch({'command':'read','fields':[]})
+        assert result['error']['code']=='bridge_request_pending'
+        assert core.journal.db.execute('select count(*) from observations').fetchone()[0]==0
+        token=core.journal.observe({**official,'module':'curves','state':{},
+                                   'session_binding':{'generation':'old'}})
+        with pytest.raises(Refused) as failure:
+            core._preflight({'command':'adjust','module':'curves','target':official['target'],'observation_token':token})
+        assert failure.value.code=='bridge_request_pending'
+    finally:core.close()
+
+
+@pytest.mark.parametrize('command,dispatched',[('read',False),('set',True)])
+def test_failed_write_after_binding_preserves_dispatch_classification(tmp_path,monkeypatch,command,dispatched):
+    import json
+    from types import SimpleNamespace
+    from c1ai.macos_backend import MacOSBackend
+    backend=MacOSBackend(tmp_path);backend.action_context={'operation_id':'one'}
+    payload={'ok':True,'observation':{'target':{'instance':{'version':'test'}},'values':{},'native_context':{}}}
+    monkeypatch.setattr('c1ai.macos_backend.inspect_installation',lambda: {'dictionary':{'fields':{}},'bundle_id':'test','version':'test'})
+    monkeypatch.setattr('c1ai.macos_backend.subprocess.run',lambda *args,**kw: SimpleNamespace(returncode=0,stdout=json.dumps(payload)))
+    def busy(observation):
+        error=Refused('bridge_request_pending','busy');error.dispatched=False;raise error
+    monkeypatch.setattr(backend,'_bridge_observation',busy)
+    with pytest.raises(Refused) as failure:
+        if command=='read':backend.observe([])
+        else:backend._native(command,[])
+    assert failure.value.dispatched is dispatched
+
+
+@pytest.mark.parametrize('stage,dispatched,action_status,operation_status', [
+    ('before', False, 'not_dispatched', 'refused'),
+    ('after', True, 'outcome_unknown', 'outcome_unknown'),
+])
+def test_official_mask_readback_busy_preserves_write_receipt(
+        tmp_path, monkeypatch, stage, dispatched, action_status, operation_status):
+    from c1ai.core import Core
+    from c1ai.macos_backend import MacOSBackend
+
+    backend = MacOSBackend(tmp_path)
+    layer = {'native_id': 'mask', 'is_image_layer': False}
+    observation = {
+        'target': {'instance': {'platform': 'macos'}, 'layer': layer},
+        'state': {'layers': [layer], 'selected_layer': layer},
+        'values': {}, 'native_context': {},
+        'evidence': {'source': 'c1_applescript', 'model_verified': True},
+    }
+    calls = []
+
+    def busy(*args):
+        error = Refused('bridge_request_pending', 'Bridge busy during mask observation')
+        error.dispatched = False
+        raise error
+
+    def native(command, *args, **kwargs):
+        calls.append(command)
+        return {'observation': deepcopy(observation),
+                'result': {'state': deepcopy(observation['state'])}}
+
+    monkeypatch.setattr(backend, '_qualified', lambda observed: True)
+    monkeypatch.setattr(backend, 'observe_module',
+                        busy if stage == 'before' else lambda module: deepcopy(observation))
+    monkeypatch.setattr(backend, '_native', native)
+    monkeypatch.setattr(backend, '_mask_observation', busy)
+    core = Core(backend, tmp_path)
+    patch = {'action': 'luma_range'}
+    request = {'command': 'adjust', 'module': 'masks', 'patch': patch, 'request_id': 'mask-busy'}
+    try:
+        record, _ = core.journal.begin(request, observation['target'], observation)
+        operation_id = record['operation_id']
+        backend.action_hook = lambda name, func, intent: core._action(operation_id, name, intent, func)
+        with pytest.raises(Refused) as failure:
+            backend.adjust_module('masks', patch, observation)
+        assert failure.value.dispatched is dispatched
+        assert calls == (['masks_adjust'] if dispatched else [])
+        result = core._uncertain(operation_id, failure.value)
+        assert result['status'] == operation_status
+        assert [action['status'] for action in result['actions']] == [action_status]
+    finally:
+        core.close()
 
 
 def test_concurrent_analysis_never_falls_back_after_bridge_disabled(tmp_path, monkeypatch):

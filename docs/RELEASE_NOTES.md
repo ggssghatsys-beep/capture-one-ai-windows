@@ -1,3 +1,11 @@
+# 0.4.0a4 · Mac 原生桥和波形图会话同步
+
+- Mac MCP、CLI 和波形图跟随 Capture One 当前 Session。关闭或重开 Session 时，波形图清除旧图表、参考和 ROI，旧观察凭据在写入前失效。
+- 原生 PNG 和波形分析使用同一份经 ICC 转换的 sRGB 像素。MCP 握手报告项目版本，原生桥同时核对宿主版本、源码构建和色彩约定。
+- 随包交付 Mac 原生桥源码和本机构建脚本。已有 Mac 用户升级时需重建并启用原生桥，然后按安装说明重启 Capture One 和重连 MCP。见 [Mac 安装与升级](INSTALL_MAC.md)。
+
+实测记录来自 Apple Silicon、macOS 15.7.4、Capture One 16.8.6.25 和 Session，覆盖七个 MCP 工具、原生 PNG、波形、Session 关闭和重开，以及候选副本编辑与恢复。Mac 编辑继续使用登记的副本。见 [Mac 验收记录](MAC_STATUS.md)。
+
 # 0.4.0a3 — Windows 可选副本或原版本编辑
 
 新增 `images(prepare_edit, edit_mode="copy"|"original")`。copy 复用已有原生克隆；original 在用户明确授权后登记当前变体，不改变照片参数。登记绑定 Session UUID、文档、照片与变体；版本资格、目标校验、新观察凭据、唯一请求编号和日志保留。旧 create_candidate 保持兼容，Mac 与 API 窗口仍使用副本流程。

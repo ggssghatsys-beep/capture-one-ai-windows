@@ -1,6 +1,6 @@
 # macOS 源码预览版安装
 
-0.4.0a1 发布包同时包含 Windows 与 Mac 源码。Mac 只在 **Apple Silicon / macOS 15.7.4 / Capture One 16.8.6.25 / Session** 完成代表性实测；不是已签名的独立应用安装包。Windows 继续使用 [INSTALL](INSTALL.md)，不要在 Mac 执行 Windows PowerShell 安装器。
+0.4.0a4 提供 Windows 与 Mac 源码，收录 Mac 原生桥、sRGB 预览和波形图 Session 同步。Mac 实测环境为 **Apple Silicon / macOS 15.7.4 / Capture One 16.8.6.25 / Session**。从发布页下载源码 ZIP，再按下文安装并在本机构建 Mac 原生桥。 [发布页](https://github.com/ggssghatsys-beep/capture-one-ai-windows/releases/tag/v0.4.0-alpha.4) · [Windows 安装](INSTALL.md)
 
 ## 安装环境与可选桌面入口
 

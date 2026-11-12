@@ -1,8 +1,10 @@
 # Capture One AI · Windows / macOS
 
+**0.4.0a4 收录 Mac 原生桥和波形图会话同步。** MCP 和波形图自动跟随当前 Session，原生 PNG 与分析共用经过 ICC 转换的 sRGB 像素。升级时请同步重建 Mac 原生桥。 [下载源码包](https://github.com/ggssghatsys-beep/capture-one-ai-windows/releases/tag/v0.4.0-alpha.4) · [Mac 安装](docs/INSTALL_MAC.md) · [实测记录](docs/MAC_STATUS.md)
+
 **0.4.0a3：Windows MCP／CLI 可选择副本或原版本。** 默认保留副本流程；用户明确授权直接编辑时，`images(prepare_edit, edit_mode="original")` 登记当前版本，不创建副本、不重置照片。每张照片仍单独绑定 Session、变体与新观察凭据。API 修图窗口和 Mac 仍使用副本流程。见 [接口说明](docs/API.md#windows-可选编辑目标)。
 
-**预览色彩修复（2026-11-01）：** Windows 原生预览与波形取样明确转换到 sRGB，PNG 内嵌 ICC；Mac 增加最终 ICC 转换与同一色彩凭据，新增 Mac 路径尚待实机验收。旧桥会明确拒绝无法确认的颜色。其他机器更新时需同步更新原生桥，见 [修复与升级说明](docs/PREVIEW_COLOR.md)。
+Windows 和 Mac 的原生预览与波形取样均已在指定宿主版本上验证 sRGB 转换，PNG 内嵌 ICC。 [色彩验证与升级说明](docs/PREVIEW_COLOR.md)
 
 **0.4.0a1：合并原生 Mac 开发预览与现有 Windows 客户端。** Windows 保留 16.8.6.3784 的现有功能；Mac 在 Apple Silicon / macOS 15.7.4 / C1 16.8.6.25 / Session 完成代表性实测，包含原生调色、图层／蒙版、RGB 波形和菜单栏常驻入口。Mac 是版本绑定的源码预览，尚非独立签名安装包；具体缺口见 [Mac 当前范围](docs/MAC_STATUS.md)。
 
